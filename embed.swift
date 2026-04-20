@@ -65,7 +65,7 @@ public enum EmbedIOSSDK {
  * @description Handles API calls to fetch embed widget information from the server.
  */
 public enum EmbedAPI {
-    /// 預設平台識別碼
+    // 預設平台識別碼
     public static let defaultPlatform = "91APP"
     
     /**
@@ -315,6 +315,38 @@ public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
     }
 }
 
+// MARK: - Load Error
+/**
+ * @struct EmbedWidgetLoadError
+ * @description Callback payload for EmbedWidgetView non-normal states.
+ */
+public struct EmbedWidgetLoadError: Error {
+    public enum StatusCode: Int {
+        // 1. 正常（不會 callback）
+        case ok = 200
+        // 2. 無資料（API 回傳 pageInfo = [] 或該 position 過濾後無資料）
+        case noData = 204
+        // 3. 系統錯誤
+        case systemError = 500
+        // 4. timeout
+        case timeout = 408
+        // 6. 其他錯誤
+        case otherError = 520
+    }
+
+    public let statusCode: Int
+    public let message: String
+    public let pageUrl: String
+    public let position: EmbedPosition
+
+    public init(statusCode: StatusCode, message: String, pageUrl: String, position: EmbedPosition) {
+        self.statusCode = statusCode.rawValue
+        self.message = message
+        self.pageUrl = pageUrl
+        self.position = position
+    }
+}
+
 // MARK: - EmbedWidgetDataManager (Shared Data Manager)
 /**
  * @class EmbedWidgetDataManager
@@ -328,13 +360,75 @@ public class EmbedWidgetDataManager: ObservableObject {
     
     private var cache: [String: CacheEntry] = [:]
     private var loadingTasks: [String: Task<Void, Never>] = [:]
+    private var lastLoadErrors: [String: EmbedWidgetLoadError] = [:]
     
     private struct CacheEntry {
         let pageInfo: [EmbedFolderInfo]
         let timestamp: Date
     }
+
+    struct WidgetLoadResult {
+        let widgets: [EmbedFolderInfo]
+        let error: EmbedWidgetLoadError?
+    }
     
     private init() {}
+
+    private func noDataResult(statusCode: EmbedWidgetLoadError.StatusCode, message: String, pageUrl: String, position: EmbedPosition) -> WidgetLoadResult {
+        WidgetLoadResult(
+            widgets: [],
+            error: EmbedWidgetLoadError(
+                statusCode: statusCode,
+                message: message,
+                pageUrl: pageUrl,
+                position: position
+            )
+        )
+    }
+
+    private func classifyError(_ error: Error, pageUrl: String, position: EmbedPosition) -> EmbedWidgetLoadError {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return EmbedWidgetLoadError(
+                    statusCode: .timeout,
+                    message: "Request timeout: \(urlError.localizedDescription)",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            case .badServerResponse:
+                return EmbedWidgetLoadError(
+                    statusCode: .systemError,
+                    message: "System error: \(urlError.localizedDescription)",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            default:
+                return EmbedWidgetLoadError(
+                    statusCode: .otherError,
+                    message: "Other error: \(urlError.localizedDescription)",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            }
+        }
+
+        if error is DecodingError {
+            return EmbedWidgetLoadError(
+                statusCode: .systemError,
+                message: "System error: Failed to decode API response.",
+                pageUrl: pageUrl,
+                position: position
+            )
+        }
+
+        return EmbedWidgetLoadError(
+            statusCode: .otherError,
+            message: "Other error: \(error.localizedDescription)",
+            pageUrl: pageUrl,
+            position: position
+        )
+    }
     
     /**
      * @function getWidgetsForPosition
@@ -353,6 +447,21 @@ public class EmbedWidgetDataManager: ObservableObject {
         productId: String? = nil,
         platform: String = EmbedAPI.defaultPlatform
     ) async -> [EmbedFolderInfo] {
+        let result = await getWidgetsForPositionResult(
+            pageUrl: pageUrl,
+            position: position,
+            productId: productId,
+            platform: platform
+        )
+        return result.widgets
+    }
+
+    func getWidgetsForPositionResult(
+        pageUrl: String,
+        position: EmbedPosition,
+        productId: String? = nil,
+        platform: String = EmbedAPI.defaultPlatform
+    ) async -> WidgetLoadResult {
         let cacheKey = pageUrl
         let positionString = position.rawValue
         
@@ -363,7 +472,23 @@ public class EmbedWidgetDataManager: ObservableObject {
             print("[EmbedWidgetDataManager] Cache hit! Found \(cached.pageInfo.count) widgets in cache")
             let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
             print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-            return filtered
+            if filtered.isEmpty {
+                if cached.pageInfo.isEmpty {
+                    return noDataResult(
+                        statusCode: .noData,
+                        message: "No data: API returned pageInfo as empty array.",
+                        pageUrl: pageUrl,
+                        position: position
+                    )
+                }
+                return noDataResult(
+                    statusCode: .noData,
+                    message: "No data: No widget available for this position after filtering.",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            }
+            return WidgetLoadResult(widgets: filtered, error: nil)
         }
         
         print("[EmbedWidgetDataManager] Cache miss")
@@ -377,9 +502,28 @@ public class EmbedWidgetDataManager: ObservableObject {
                 print("[EmbedWidgetDataManager] Load completed, found \(cached.pageInfo.count) widgets")
                 let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
                 print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-                return filtered
+                if filtered.isEmpty {
+                    if cached.pageInfo.isEmpty {
+                        return noDataResult(
+                            statusCode: .noData,
+                            message: "No data: API returned pageInfo as empty array.",
+                            pageUrl: pageUrl,
+                            position: position
+                        )
+                    }
+                    return noDataResult(
+                        statusCode: .noData,
+                        message: "No data: No widget available for this position after filtering.",
+                        pageUrl: pageUrl,
+                        position: position
+                    )
+                }
+                return WidgetLoadResult(widgets: filtered, error: nil)
             } else {
                 print("[EmbedWidgetDataManager] Load completed but cache is empty (possible error)")
+                if let loadError = lastLoadErrors[cacheKey] {
+                    return WidgetLoadResult(widgets: [], error: loadError)
+                }
             }
         }
         
@@ -389,8 +533,17 @@ public class EmbedWidgetDataManager: ObservableObject {
         
         guard !finalProductId.isEmpty else {
             print("[EmbedWidgetDataManager] ERROR: productId is empty, returning empty array")
-            return []
+            return WidgetLoadResult(
+                widgets: [],
+                error: EmbedWidgetLoadError(
+                    statusCode: .otherError,
+                    message: "Other error: Failed to extract productId from pageUrl.",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            )
         }
+        lastLoadErrors.removeValue(forKey: cacheKey)
         
         // 創建載入任務
         let task = Task { @MainActor in
@@ -411,10 +564,12 @@ public class EmbedWidgetDataManager: ObservableObject {
                     pageInfo: response.pageInfo,
                     timestamp: Date()
                 )
+                self.lastLoadErrors.removeValue(forKey: cacheKey)
                 self.loadingTasks.removeValue(forKey: cacheKey)
                 print("[EmbedWidgetDataManager] Cache updated and loading task removed")
             } catch {
                 print("[EmbedWidgetDataManager] ERROR in API call: \(error.localizedDescription)")
+                self.lastLoadErrors[cacheKey] = self.classifyError(error, pageUrl: pageUrl, position: position)
                 self.loadingTasks.removeValue(forKey: cacheKey)
             }
         }
@@ -430,11 +585,40 @@ public class EmbedWidgetDataManager: ObservableObject {
             print("[EmbedWidgetDataManager] After load, found \(cached.pageInfo.count) widgets in cache")
             let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
             print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-            return filtered
+            if filtered.isEmpty {
+                if cached.pageInfo.isEmpty {
+                    return noDataResult(
+                        statusCode: .noData,
+                        message: "No data: API returned pageInfo as empty array.",
+                        pageUrl: pageUrl,
+                        position: position
+                    )
+                }
+                return noDataResult(
+                    statusCode: .noData,
+                    message: "No data: No widget available for this position after filtering.",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            }
+            return WidgetLoadResult(widgets: filtered, error: nil)
+        }
+
+        if let loadError = lastLoadErrors[cacheKey] {
+            print("[EmbedWidgetDataManager] Returning load error: statusCode=\(loadError.statusCode), message: \(loadError.message)")
+            return WidgetLoadResult(widgets: [], error: loadError)
         }
         
         print("[EmbedWidgetDataManager] WARNING: Cache is still empty after load, returning empty array")
-        return []
+        return WidgetLoadResult(
+            widgets: [],
+            error: EmbedWidgetLoadError(
+                statusCode: .otherError,
+                message: "Other error: Unknown error while loading widgets.",
+                pageUrl: pageUrl,
+                position: position
+            )
+        )
     }
     
     /**
@@ -546,9 +730,11 @@ public class EmbedWidgetDataManager: ObservableObject {
         if let pageUrl = pageUrl {
             cache.removeValue(forKey: pageUrl)
             loadingTasks.removeValue(forKey: pageUrl)
+            lastLoadErrors.removeValue(forKey: pageUrl)
         } else {
             cache.removeAll()
             loadingTasks.removeAll()
+            lastLoadErrors.removeAll()
         }
     }
 }
@@ -565,6 +751,7 @@ public struct EmbedWidgetView: View {
     private let position: EmbedPosition
     private let productId: String?
     private let platform: String
+    private let onError: ((EmbedWidgetLoadError) -> Void)?
     
     @State private var folderInfos: [EmbedFolderInfo] = []
     @State private var isLoading: Bool = false
@@ -578,15 +765,18 @@ public struct EmbedWidgetView: View {
      *
      * @param {String} pageUrl - The page URL where the widget is displayed.
      * @param {EmbedPosition} position - The position where the widget should be displayed.
+     * @param {(EmbedWidgetLoadError) -> Void?} onError - Optional callback when SDK load fails and widget cannot render.
      *
      * @returns {EmbedWidgetView} A new EmbedWidgetView instance.
      */
     public init(
         pageUrl: String,
-        position: EmbedPosition
+        position: EmbedPosition,
+        onError: ((EmbedWidgetLoadError) -> Void)? = nil
     ) {
         self.pageUrl = pageUrl
         self.position = position
+        self.onError = onError
         // 自動從 pageUrl 提取 productId（使用與 JavaScript getProductId() 相同的邏輯）
         self.productId = EmbedAPI.extractProductIdFromPageUrl(pageUrl)
         // 使用預設平台
@@ -734,14 +924,26 @@ public struct EmbedWidgetView: View {
         print("[EmbedWidgetView] Calling EmbedWidgetDataManager.shared.getWidgetsForPosition...")
         
         // 使用共享資料管理器，避免重複 API 呼叫
-        let widgets = await EmbedWidgetDataManager.shared.getWidgetsForPosition(
+        let result = await EmbedWidgetDataManager.shared.getWidgetsForPositionResult(
             pageUrl: pageUrl,
             position: position,
             productId: productId,
             platform: platform
         )
+        let widgets = result.widgets
         
         print("[EmbedWidgetView] Received \(widgets.count) widgets from data manager")
+
+        if let loadError = result.error {
+            await MainActor.run {
+                print("[EmbedWidgetView] ERROR: statusCode=\(loadError.statusCode), message: \(loadError.message)")
+                self.errorMessage = loadError.message
+                self.folderInfos = []
+                self.isLoading = false
+                self.onError?(loadError)
+            }
+            return
+        }
         
         // 載入完成後進行 log（僅在第一次載入時）
         if !widgets.isEmpty {

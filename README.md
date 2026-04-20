@@ -4,19 +4,19 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Features
 
--   ✅ SwiftUI integration
--   ✅ Floating media support with click-through overlay
--   ✅ Lightbox functionality
--   ✅ Smart hit-testing for interactive elements
--   ✅ Support for fixed position widgets
--   ✅ Fullscreen mode support
--   ✅ Automatic resize handling
+- ✅ SwiftUI integration
+- ✅ Floating media support with click-through overlay
+- ✅ Lightbox functionality
+- ✅ Smart hit-testing for interactive elements
+- ✅ Support for fixed position widgets
+- ✅ Fullscreen mode support
+- ✅ Automatic resize handling
 
 ## Requirements
 
--   iOS 16.0+
--   Swift 5.0+
--   Xcode 14.0+
+- iOS 16.0+
+- Swift 5.0+
+- Xcode 14.0+
 
 ## Installation
 
@@ -51,15 +51,22 @@ import EmbedIOSSDK
 
 struct ContentView: View {
     @State private var pageUrl: String = "https://your-domain.com/product/12345"
+    @State private var showBelowBuyButtonWidget = true
 
     var body: some View {
         ScrollView {
             VStack {
                 // Display widget below buy button
-                EmbedWidgetView(
-                    pageUrl: pageUrl,
-                    position: EmbedIOSSDK.BELOW_BUY_BUTTON
-                )
+                if showBelowBuyButtonWidget {
+                    EmbedWidgetView(
+                        pageUrl: pageUrl,
+                        position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+                        onError: { _ in
+                            // SDK error: notify App to hide this slot
+                            showBelowBuyButtonWidget = false
+                        }
+                    )
+                }
 
                 // Display widget below main product info
                 EmbedWidgetView(
@@ -78,19 +85,19 @@ The `position` parameter accepts the following values from `EmbedIOSSDK.Position
 
 **Standard Positions:**
 
--   `EmbedIOSSDK.BELOW_BUY_BUTTON` - Display below the buy button
--   `EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO` - Display below main product information
--   `EmbedIOSSDK.ABOVE_RECOMMENDATION` - Display above recommendation section
--   `EmbedIOSSDK.ABOVE_FILTER` - Display above filter section
+- `EmbedIOSSDK.BELOW_BUY_BUTTON` - Display below the buy button
+- `EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO` - Display below main product information
+- `EmbedIOSSDK.ABOVE_RECOMMENDATION` - Display above recommendation section
+- `EmbedIOSSDK.ABOVE_FILTER` - Display above filter section
 
 **Fixed FloatingMedia Positions:**
 
--   `EmbedIOSSDK.FIXED_BOTTOM_LEFT` - Fixed at bottom left corner
--   `EmbedIOSSDK.FIXED_BOTTOM_RIGHT` - Fixed at bottom right corner
--   `EmbedIOSSDK.FIXED_TOP_LEFT` - Fixed at top left corner
--   `EmbedIOSSDK.FIXED_TOP_RIGHT` - Fixed at top right corner
--   `EmbedIOSSDK.FIXED_CENTER_LEFT` - Fixed at center left
--   `EmbedIOSSDK.FIXED_CENTER_RIGHT` - Fixed at center right
+- `EmbedIOSSDK.FIXED_BOTTOM_LEFT` - Fixed at bottom left corner
+- `EmbedIOSSDK.FIXED_BOTTOM_RIGHT` - Fixed at bottom right corner
+- `EmbedIOSSDK.FIXED_TOP_LEFT` - Fixed at top left corner
+- `EmbedIOSSDK.FIXED_TOP_RIGHT` - Fixed at top right corner
+- `EmbedIOSSDK.FIXED_CENTER_LEFT` - Fixed at center left
+- `EmbedIOSSDK.FIXED_CENTER_RIGHT` - Fixed at center right
 
 **Note:** Fixed positions are only for FloatingMedia widgets. The SDK automatically filters widgets based on the `floatingMediaPosition` field when using fixed positions.
 
@@ -134,8 +141,26 @@ struct ProductPageView: View {
 
 ### Parameters
 
--   **`pageUrl`** (String, required): The URL of the page where the widget is displayed. The SDK will automatically extract the product ID from this URL.
--   **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
+- **`pageUrl`** (String, required): The URL of the page where the widget is displayed. The SDK will automatically extract the product ID from this URL.
+- **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
+- **`onError`** ((EmbedWidgetLoadError) -> Void, optional): Called for non-`200` status codes. Use this callback to hide the slot in your App.
+
+### Error Callback (Hide Slot)
+
+When callback status code is non-`200` (no data or error), `onError` will be triggered.  
+`EmbedWidgetLoadError` includes:
+
+- `statusCode`: callback status code
+    - `200` 正常（不會 callback）
+    - `204` 無資料（API 回傳 `pageInfo = []` 或該版位過濾後無資料）
+    - `500` 系統錯誤
+    - `408` timeout
+    - `520` 其他錯誤
+- `message`: error message
+- `pageUrl`: current page URL
+- `position`: current widget position
+
+**Behavior:** Non-`200` 都會觸發 callback，建議 App 直接隱藏該版位。
 
 ### Advanced Usage
 
