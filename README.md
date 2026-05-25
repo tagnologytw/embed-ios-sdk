@@ -43,23 +43,30 @@ pod install
 
 ### Basic Usage
 
-`EmbedWidgetView` automatically loads and displays widgets based on the page URL and position. The SDK will automatically extract the product ID from the page URL.
+進入頁面後，先呼叫 `EmbedIOSSDK.initialize(pageUrl:mid:secret:)`。  
+初始化成功後，再用 `EmbedWidgetView(position:)` 顯示各版位。
 
 ```swift
 import SwiftUI
 import EmbedIOSSDK
 
 struct ContentView: View {
-    @State private var pageUrl: String = "https://your-domain.com/product/12345"
+    @State private var pageUrl: String = "https://partnertest4.91app.com/SalePage/Index/9323753"
+    @State private var mid: String = "41458"
+    @State private var secret: String = "YOUR_PAYLOAD_SECRET_BASE64"
+    @State private var isEmbedInitialized = false
     @State private var showBelowBuyButtonWidget = true
 
     var body: some View {
         ScrollView {
             VStack {
+                if !isEmbedInitialized {
+                    ProgressView()
+                }
+
                 // Display widget below buy button
-                if showBelowBuyButtonWidget {
+                if isEmbedInitialized && showBelowBuyButtonWidget {
                     EmbedWidgetView(
-                        pageUrl: pageUrl,
                         position: EmbedIOSSDK.BELOW_BUY_BUTTON,
                         onError: { _ in
                             // SDK error: notify App to hide this slot
@@ -69,15 +76,45 @@ struct ContentView: View {
                 }
 
                 // Display widget below main product info
-                EmbedWidgetView(
-                    pageUrl: pageUrl,
-                    position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO
-                )
+                if isEmbedInitialized {
+                    EmbedWidgetView(position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO)
+                }
             }
+        }
+        .task {
+            let initError = await EmbedIOSSDK.initialize(
+                pageUrl: pageUrl,
+                mid: mid,
+                secret: secret,
+                forceRefresh: true // optional, avoid stale in-memory cache during debug
+            )
+            isEmbedInitialized = (initError == nil)
         }
     }
 }
 ```
+
+### Initialization Request Details
+
+SDK 會呼叫：
+
+- `[POST] {BASE_URL}/91app/pageBundle`
+
+Request body 為 AES-256-GCM 加密後 payload：
+
+```js
+const requestBody = encryptPayload({
+  mid: MID,
+  id: PAGE_ID,
+  url: PAGE_URL,
+  payloadSecret: PAYLOAD_SECRET
+});
+```
+
+`PAGE_ID` 由 `PAGE_URL` 解析：
+
+- `https://partnertest4.91app.com/SalePage/Index/9323753` -> `9323753`
+- `https://partnertest4.91app.com/v2/official/SalePageCategory/481477?sortMode=Newest` -> `481477`
 
 ### Position Enum
 
@@ -107,9 +144,8 @@ For fixed position widgets (FloatingMedia), you can overlay them on your content
 
 ```swift
 struct ProductPageView: View {
-    @State private var pageUrl: String = "https://your-domain.com/product/12345"
+    @State private var isEmbedInitialized: Bool = true
     @State private var showFixedWidget: Bool = true
-    @State private var hasContent: Bool = false
 
     var body: some View {
         ZStack {
@@ -119,15 +155,11 @@ struct ProductPageView: View {
             }
 
             // Fixed position widget overlay
-            if showFixedWidget {
+            if isEmbedInitialized && showFixedWidget {
                 VStack {
                     Spacer()
                     HStack {
-                        FixedFloatingMediaWidgetView(
-                            pageUrl: pageUrl,
-                            position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
-                            hasContent: $hasContent
-                        )
+                        EmbedWidgetView(position: EmbedIOSSDK.FIXED_BOTTOM_LEFT)
                         Spacer()
                     }
                     .padding(.leading, 20)
@@ -141,7 +173,12 @@ struct ProductPageView: View {
 
 ### Parameters
 
-- **`pageUrl`** (String, required): The URL of the page where the widget is displayed. The SDK will automatically extract the product ID from this URL.
+- **`initialize(pageUrl:mid:secret:baseURL:forceRefresh:)`** (required before widget render)
+  - `pageUrl` (String, required): 當前頁面 URL
+  - `mid` (String, required): 商店 MID
+  - `secret` (String, required): `payloadSecret`（Base64 且 decode 後必須是 32 bytes）
+  - `baseURL` (String, optional): API 網域，預設 `https://embed.tagnology.co/api`
+  - `forceRefresh` (Bool, optional): 是否忽略 in-memory cache 重新打 API（預設 `false`）
 - **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
 - **`onError`** ((EmbedWidgetLoadError) -> Void, optional): Called for non-`200` status codes. Use this callback to hide the slot in your App.
 
@@ -152,7 +189,10 @@ When callback status code is non-`200` (no data or error), `onError` will be tri
 
 - `statusCode`: callback status code
     - `200` 正常（不會 callback）
-    - `204` 無資料（API 回傳 `pageInfo = []` 或該版位過濾後無資料）
+    - `204` 無資料（API 回傳 `pageBundle = []` 或該版位過濾後無資料）
+    - `422` 初始化參數錯誤（例如 pageUrl 無法取出 ID、secret 格式錯誤）
+    - `425` 初始化進行中
+    - `428` 尚未初始化（尚未呼叫 `initialize`）
     - `500` 系統錯誤
     - `408` timeout
     - `520` 其他錯誤
@@ -160,11 +200,12 @@ When callback status code is non-`200` (no data or error), `onError` will be tri
 - `pageUrl`: current page URL
 - `position`: current widget position
 
-**Behavior:** Non-`200` 都會觸發 callback，建議 App 直接隱藏該版位。
+**Behavior:** `204/422/500/408/520` 建議隱藏版位；`425/428` 建議等待或先完成初始化後再渲染。
 
 ### Advanced Usage
 
-The SDK uses a shared data manager to cache widget data and avoid multiple API calls for the same page URL. All `EmbedWidgetView` instances with the same `pageUrl` will share the same cached data.
+The SDK uses a shared data manager to cache initialization data and avoid multiple API calls for the same page URL.  
+After a successful `initialize`, all `EmbedWidgetView(position:)` share the same in-memory page bundle.
 
 To clear the cache manually:
 

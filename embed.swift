@@ -1,6 +1,7 @@
 // EmbedViews.swift
 import SwiftUI
 import WebKit
+import CryptoKit
 
 // MARK: - View Modifiers
 @available(iOS 16.0, *)
@@ -17,6 +18,16 @@ enum EmbedBridge {
     static let eventHandlerName = "tagnologyEvent"
     static let eventTypeKey = "eventType"
     static let bridgeInjectionFlag = "__tagnologyNativeBridgeInjected"
+}
+
+enum EmbedLogger {
+    // Turn on only when debugging.
+    static let isEnabled = false
+
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print(message())
+    }
 }
 
 // MARK: - Position Enum
@@ -57,6 +68,35 @@ public enum EmbedIOSSDK {
 	public static let FIXED_TOP_RIGHT = EmbedPosition.FIXED_TOP_RIGHT
 	public static let FIXED_CENTER_LEFT = EmbedPosition.FIXED_CENTER_LEFT
 	public static let FIXED_CENTER_RIGHT = EmbedPosition.FIXED_CENTER_RIGHT
+
+    /**
+     * @function initialize
+     * @description Initializes embed data for the current page. This must be called once
+     *              before rendering EmbedWidgetView(position:).
+     *
+     * @param {String} pageUrl - Current page URL.
+     * @param {String} mid - Merchant ID.
+     * @param {String} secret - payloadSecret used to encrypt request body.
+     * @param {String} baseURL - API base URL. Defaults to SDK endpoint.
+     *
+     * @returns {EmbedWidgetLoadError?} nil if success; error when initialization fails.
+     */
+    @available(iOS 16.0, *)
+    public static func initialize(
+        pageUrl: String,
+        mid: String,
+        secret: String,
+        baseURL: String = EmbedAPI.defaultBaseURL,
+        forceRefresh: Bool = false
+    ) async -> EmbedWidgetLoadError? {
+        await EmbedWidgetDataManager.shared.initialize(
+            pageUrl: pageUrl,
+            mid: mid,
+            payloadSecret: secret,
+            baseURL: baseURL,
+            forceRefresh: forceRefresh
+        )
+    }
 }
 
 // MARK: - API
@@ -65,212 +105,220 @@ public enum EmbedIOSSDK {
  * @description Handles API calls to fetch embed widget information from the server.
  */
 public enum EmbedAPI {
-    // 預設平台識別碼
-    public static let defaultPlatform = "91APP"
+    public static let defaultBaseURL = "https://embed.tagnology.co/api"
+
+    public enum EmbedAPIError: LocalizedError {
+        case invalidPageURL
+        case invalidPageID
+        case invalidPayloadSecret
+        case encryptionFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidPageURL:
+                return "Invalid page URL."
+            case .invalidPageID:
+                return "Failed to extract page ID from page URL."
+            case .invalidPayloadSecret:
+                return "payloadSecret must be base64-encoded 32 bytes."
+            case .encryptionFailed:
+                return "Failed to encrypt request payload."
+            }
+        }
+    }
+
+    public struct PageBundleRequestBody: Codable {
+        public let mid: Int
+        public let iv: String
+        public let payload: String
+        public let tag: String
+    }
     
     /**
-     * @function extractProductIdFromPageUrl
-     * @description Extracts product ID from page URL based on the URL path pattern.
-     *              Matches the logic from JavaScript getProductId() function.
+     * @function extractPageIdFromPageUrl
+     * @description Extracts page ID from page URL using 91APP rules:
+     *              - /SalePage/Index/{id}
+     *              - /SalePageCategory/{id}
      *
      * @param {String} pageUrl - The page URL to extract product ID from.
      *
      * @returns {String?} The extracted product ID, or nil if not found.
      */
-    public static func extractProductIdFromPageUrl(_ pageUrl: String) -> String? {
+    public static func extractPageIdFromPageUrl(_ pageUrl: String) -> String? {
         guard let url = URL(string: pageUrl) else {
             return nil
         }
-        
-        let pathname = url.path.lowercased()
-        let pathComponents = pathname.components(separatedBy: "/").filter { !$0.isEmpty }
-        
-        if pathname.contains("/salepage/") {
-            // 對於 SalePage，返回最後一個路徑組件
-            // 注意：在 Swift 中無法從 DOM 獲取，所以直接使用路徑的最後部分
-            return pathComponents.last
-        } else if pathname.contains("/salepagecategory/") {
-            // 對於 SalePageCategory，返回 category_${最後一個部分}
-            if let lastComponent = pathComponents.last {
-                return "category_\(lastComponent)"
-            }
-        } else if pathname.contains("/detail/") {
-            // 對於 Detail，返回 detail_${最後一個部分}
-            if let lastComponent = pathComponents.last {
-                return "detail_\(lastComponent)"
-            }
+
+        let pathComponents = url.path.components(separatedBy: "/").filter { !$0.isEmpty }
+        let lowercasedComponents = pathComponents.map { $0.lowercased() }
+
+        if let indexPosition = lowercasedComponents.firstIndex(of: "index"),
+           indexPosition + 1 < pathComponents.count {
+            return pathComponents[indexPosition + 1]
         }
-        
+
+        if let categoryPosition = lowercasedComponents.firstIndex(of: "salepagecategory"),
+           categoryPosition + 1 < pathComponents.count {
+            return pathComponents[categoryPosition + 1]
+        }
+
         return nil
     }
-    /**
-     * @struct PageInfoResponse
-     * @description Response structure from the getPageInfo API endpoint.
-     */
-    public struct PageInfoResponse: Codable {
-        public let message: String
-        public let pageInfo: [EmbedFolderInfo]
-        
-        public init(message: String, pageInfo: [EmbedFolderInfo]) {
-            self.message = message
-            self.pageInfo = pageInfo
+
+    // backward compatible alias
+    public static func extractProductIdFromPageUrl(_ pageUrl: String) -> String? {
+        extractPageIdFromPageUrl(pageUrl)
+    }
+
+    private static func getAESKey(mid: String, payloadSecret: String) -> SymmetricKey {
+        let digest = SHA256.hash(data: Data((mid + payloadSecret).utf8))
+        return SymmetricKey(data: Data(digest))
+    }
+
+    private static func validatePayloadSecret(_ payloadSecret: String) throws {
+        guard let secretData = Data(base64Encoded: payloadSecret), secretData.count == 32 else {
+            throw EmbedAPIError.invalidPayloadSecret
         }
     }
-    
+
+    public static func encryptPayload(mid: String, id: String, url: String, payloadSecret: String) throws -> PageBundleRequestBody {
+        try validatePayloadSecret(payloadSecret)
+
+        guard let midNumber = Int(mid) else {
+            throw EmbedAPIError.encryptionFailed
+        }
+
+        let aesKey = getAESKey(mid: mid, payloadSecret: payloadSecret)
+        let nonceData = Data((0..<12).map { _ in UInt8.random(in: 0...255) })
+        let nonce = try AES.GCM.Nonce(data: nonceData)
+
+        let payloadObject: [String: Any] = [
+            "mid": midNumber,
+            "id": id,
+            "url": url
+        ]
+        let payloadData = try JSONSerialization.data(withJSONObject: payloadObject, options: [])
+        let sealedBox = try AES.GCM.seal(payloadData, using: aesKey, nonce: nonce)
+
+        return PageBundleRequestBody(
+            mid: midNumber,
+            iv: nonceData.base64EncodedString(),
+            payload: sealedBox.ciphertext.base64EncodedString(),
+            tag: sealedBox.tag.base64EncodedString()
+        )
+    }
+
     /**
-     * @function fetchPageInfo
-     * @description Fetches page information including embed widgets from the server.
-     *              Note: When layout is "FloatingMedia", the response will include an additional
-     *              floatingMediaPosition field with possible values:
-     *              - "TopRight"
-     *              - "CenterRight"
-     *              - "BottomRight"
-     *              - "TopLeft"
-     *              - "CenterLeft"
-     *              - "BottomLeft"
-     *
-     * @param {String} productId - The product ID to fetch information for.
-     * @param {String} platform - The platform identifier (e.g., "91APP").
-     * @param {String} pageUrl - The page URL where the widget is displayed.
-     *
-     * @returns {PageInfoResponse} The response containing page information and embed widgets.
-     * @throws {URLError} If the URL is invalid or the request fails.
+     * @struct PageBundleResponse
+     * @description Response structure from /91app/pageBundle.
      */
-    public static func fetchPageInfo(productId: String, platform: String, pageUrl: String) async throws -> PageInfoResponse {
-        print("[EmbedAPI] fetchPageInfo called")
-        print("[EmbedAPI]   - productId: \(productId)")
-        print("[EmbedAPI]   - platform: \(platform)")
-        print("[EmbedAPI]   - pageUrl: \(pageUrl)")
-        
-        guard let url = URL(string: "https://embed.tagnology.co/api/product/getPageInfo") else {
-            print("[EmbedAPI] ERROR: Invalid URL")
+    public struct PageBundleResponse: Codable {
+        public let message: String
+        public let pageBundle: [EmbedFolderInfo]
+
+        public init(message: String, pageBundle: [EmbedFolderInfo]) {
+            self.message = message
+            self.pageBundle = pageBundle
+        }
+    }
+
+    /**
+     * @function fetchPageBundle
+     * @description Calls /91app/pageBundle with encrypted payload.
+     */
+    public static func fetchPageBundle(
+        pageUrl: String,
+        mid: String,
+        payloadSecret: String,
+        baseURL: String = defaultBaseURL
+    ) async throws -> PageBundleResponse {
+        guard let pageID = extractPageIdFromPageUrl(pageUrl) else {
+            throw EmbedAPIError.invalidPageID
+        }
+
+        let requestBody = try encryptPayload(
+            mid: mid,
+            id: pageID,
+            url: pageUrl,
+            payloadSecret: payloadSecret
+        )
+
+        guard let requestURL = URL(string: "\(baseURL)/91app/pageBundle") else {
             throw URLError(.badURL)
         }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: requestURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "productId": productId,
-            "platform": platform,
-            "page": pageUrl
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        
-        print("[EmbedAPI] Sending request to: \(url.absoluteString)")
+        request.httpBody = try JSONEncoder().encode(requestBody)
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let http = response as? HTTPURLResponse else {
-            print("[EmbedAPI] ERROR: Invalid response type")
             throw URLError(.badServerResponse)
         }
-        
-        print("[EmbedAPI] Response status code: \(http.statusCode)")
-        
+
         guard 200..<300 ~= http.statusCode else {
-            print("[EmbedAPI] ERROR: Bad status code \(http.statusCode)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("[EmbedAPI] Response body: \(responseString)")
-            }
             throw URLError(.badServerResponse)
         }
-        
-        let decoded = try JSONDecoder().decode(PageInfoResponse.self, from: data)
-        return decoded
+
+        return try JSONDecoder().decode(PageBundleResponse.self, from: data)
     }
-    
-    /**
-     * @function fetchPageInfoForPosition
-     * @description Fetches page information and filters widgets by the specified position.
-     *
-     * @param {String} pageUrl - The page URL where the widget is displayed.
-     * @param {EmbedPosition} position - The position where the widget should be displayed.
-     * @param {String} productId - Optional product ID. If not provided, will be extracted from pageUrl if possible.
-     * @param {String} platform - Optional platform identifier. Defaults to "91APP" if not provided.
-     *
-     * @returns {[EmbedFolderInfo]} Array of embed folder information matching the specified position, or empty array if none found.
-     * @throws {URLError} If the URL is invalid or the request fails.
-     */
-    public static func fetchPageInfoForPosition(
-        pageUrl: String,
-        position: EmbedPosition,
-        productId: String? = nil,
-        platform: String = EmbedAPI.defaultPlatform
-    ) async throws -> [EmbedFolderInfo] {
-        // 嘗試從 pageUrl 提取 productId（如果未提供）
-        let finalProductId: String
-        if let productId = productId {
-            finalProductId = productId
+}
+
+public enum EmbedJSONValue: Codable, Hashable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: EmbedJSONValue])
+    case array([EmbedJSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        if container.decodeNil() {
+            self = .null
+        } else if let boolValue = try? container.decode(Bool.self) {
+            self = .bool(boolValue)
+        } else if let intValue = try? container.decode(Int.self) {
+            self = .number(Double(intValue))
+        } else if let doubleValue = try? container.decode(Double.self) {
+            self = .number(doubleValue)
+        } else if let stringValue = try? container.decode(String.self) {
+            self = .string(stringValue)
+        } else if let objectValue = try? container.decode([String: EmbedJSONValue].self) {
+            self = .object(objectValue)
+        } else if let arrayValue = try? container.decode([EmbedJSONValue].self) {
+            self = .array(arrayValue)
         } else {
-            // 使用 extractProductIdFromPageUrl 函數提取 productId
-            finalProductId = EmbedAPI.extractProductIdFromPageUrl(pageUrl) ?? ""
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
         }
-        
-        let response = try await fetchPageInfo(
-            productId: finalProductId,
-            platform: platform,
-            pageUrl: pageUrl
-        )
-        
-        // 根據 position 過濾 widgets
-        let positionString = position.rawValue
-        let expectedFloatingMediaPosition: String? = {
-            switch position {
-            case .FIXED_BOTTOM_LEFT:
-                return "BottomLeft"
-            case .FIXED_BOTTOM_RIGHT:
-                return "BottomRight"
-            case .FIXED_TOP_LEFT:
-                return "TopLeft"
-            case .FIXED_TOP_RIGHT:
-                return "TopRight"
-            case .FIXED_CENTER_LEFT:
-                return "CenterLeft"
-            case .FIXED_CENTER_RIGHT:
-                return "CenterRight"
-            default:
-                return nil
-            }
-        }()
-        let isFixedPosition = expectedFloatingMediaPosition != nil
-        
-        let filteredWidgets = response.pageInfo.filter { folderInfo in
-            let isFloatingMedia = folderInfo.layout?.lowercased() == "floatingmedia"
-            
-            // 如果是 FIXED_* 位置，需要匹配 FloatingMedia 的 floatingMediaPosition
-            if isFixedPosition {
-                if isFloatingMedia {
-                    let widgetFloatingMediaPosition = folderInfo.floatingMediaPosition
-                    return widgetFloatingMediaPosition == expectedFloatingMediaPosition
-                } else {
-                    // FIXED_* 位置只顯示 FloatingMedia widgets
-                    return false
-                }
-            }
-            
-            // 非 FIXED 位置：不允許顯示 FloatingMedia widgets
-            if isFloatingMedia {
-                return false
-            }
-            
-            // 正常過濾：根據 embedLocation 匹配（非 FIXED 位置，且非 FloatingMedia）
-            if let embedLocation = folderInfo.embedLocation {
-                let embedLocationUpper = embedLocation.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
-                let positionStringTrimmed = positionString.trimmingCharacters(in: .whitespacesAndNewlines)
-                return embedLocationUpper == positionStringTrimmed
-            }
-            return false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
         }
-        
-        // 對過濾後的 widgets 進行排序：按照 timestamp 降序（較新的先顯示）
-        // 如果沒有 timestamp，則保持原順序（放在最後）
-        let sortedWidgets = filteredWidgets.sorted { folderInfo1, folderInfo2 in
-            let timestamp1 = folderInfo1.timestamp ?? 0
-            let timestamp2 = folderInfo2.timestamp ?? 0
-            // 降序排序：timestamp 較大的（較新的）先顯示
-            return timestamp1 > timestamp2
+    }
+
+    public var stringValue: String? {
+        if case .string(let value) = self {
+            return value
         }
-        
-        return sortedWidgets
+        return nil
     }
 }
 
@@ -278,8 +326,6 @@ public enum EmbedAPI {
 /**
  * @struct EmbedFolderInfo
  * @description Information about an embed widget folder.
- *              When layout is "FloatingMedia", floatingMediaPosition will be present with values:
- *              "TopRight", "CenterRight", "BottomRight", "TopLeft", "CenterLeft", "BottomLeft"
  */
 public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
     public let folderId: String
@@ -292,14 +338,34 @@ public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
     public let timestamp: Int?
     public let folderName: String?
     public let layout: String?
-    public let setting: Int?
-    /// FloatingMedia position. Only present when layout is "FloatingMedia".
-    /// Possible values: "TopRight", "CenterRight", "BottomRight", "TopLeft", "CenterLeft", "BottomLeft"
+    public let setting: [String: EmbedJSONValue]?
     public let floatingMediaPosition: String?
 
     public var id: String { folderId }
-    
-    public init(folderId: String, productId: String? = nil, platform: String? = nil, productName: String? = nil, productUrl: String? = nil, productImage: String? = nil, embedLocation: String? = nil, timestamp: Int? = nil, folderName: String? = nil, layout: String? = nil, setting: Int? = nil, floatingMediaPosition: String? = nil) {
+
+    public var resolvedFloatingMediaPosition: String? {
+        if let floatingMediaPosition, !floatingMediaPosition.isEmpty {
+            return floatingMediaPosition
+        }
+        return setting?["floatingMediaPosition"]?.stringValue
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case folderId
+        case productId
+        case platform
+        case productName
+        case productUrl
+        case productImage
+        case embedLocation
+        case timestamp
+        case folderName
+        case layout
+        case setting
+        case floatingMediaPosition
+    }
+
+    public init(folderId: String, productId: String? = nil, platform: String? = nil, productName: String? = nil, productUrl: String? = nil, productImage: String? = nil, embedLocation: String? = nil, timestamp: Int? = nil, folderName: String? = nil, layout: String? = nil, setting: [String: EmbedJSONValue]? = nil, floatingMediaPosition: String? = nil) {
         self.folderId = folderId
         self.productId = productId
         self.platform = platform
@@ -313,6 +379,22 @@ public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
         self.setting = setting
         self.floatingMediaPosition = floatingMediaPosition
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        folderId = try container.decode(String.self, forKey: .folderId)
+        productId = try container.decodeIfPresent(String.self, forKey: .productId)
+        platform = try container.decodeIfPresent(String.self, forKey: .platform)
+        productName = try container.decodeIfPresent(String.self, forKey: .productName)
+        productUrl = try container.decodeIfPresent(String.self, forKey: .productUrl)
+        productImage = try container.decodeIfPresent(String.self, forKey: .productImage)
+        embedLocation = try container.decodeIfPresent(String.self, forKey: .embedLocation)
+        timestamp = try container.decodeIfPresent(Int.self, forKey: .timestamp)
+        folderName = try container.decodeIfPresent(String.self, forKey: .folderName)
+        layout = try container.decodeIfPresent(String.self, forKey: .layout)
+        setting = try? container.decode([String: EmbedJSONValue].self, forKey: .setting)
+        floatingMediaPosition = try container.decodeIfPresent(String.self, forKey: .floatingMediaPosition)
+    }
 }
 
 // MARK: - Load Error
@@ -322,15 +404,13 @@ public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
  */
 public struct EmbedWidgetLoadError: Error {
     public enum StatusCode: Int {
-        // 1. 正常（不會 callback）
         case ok = 200
-        // 2. 無資料（API 回傳 pageInfo = [] 或該 position 過濾後無資料）
         case noData = 204
-        // 3. 系統錯誤
-        case systemError = 500
-        // 4. timeout
+        case invalidInitPayload = 422
+        case initializing = 425
+        case notInitialized = 428
         case timeout = 408
-        // 6. 其他錯誤
+        case systemError = 500
         case otherError = 520
     }
 
@@ -345,38 +425,59 @@ public struct EmbedWidgetLoadError: Error {
         self.pageUrl = pageUrl
         self.position = position
     }
+
+    func withPosition(_ newPosition: EmbedPosition) -> EmbedWidgetLoadError {
+        EmbedWidgetLoadError(
+            statusCode: StatusCode(rawValue: statusCode) ?? .otherError,
+            message: message,
+            pageUrl: pageUrl,
+            position: newPosition
+        )
+    }
 }
 
 // MARK: - EmbedWidgetDataManager (Shared Data Manager)
-/**
- * @class EmbedWidgetDataManager
- * @description Manages shared data for embed widgets to avoid multiple API calls for the same page URL.
- *              All EmbedWidgetView instances with the same pageUrl will share the same data source.
- */
 @available(iOS 16.0, *)
 @MainActor
 public class EmbedWidgetDataManager: ObservableObject {
     public static let shared = EmbedWidgetDataManager()
-    
+
     private var cache: [String: CacheEntry] = [:]
-    private var loadingTasks: [String: Task<Void, Never>] = [:]
-    private var lastLoadErrors: [String: EmbedWidgetLoadError] = [:]
-    
+    private var currentContext: InitContext?
+    private var initTask: Task<Void, Never>?
+    private var initState: InitState = .idle
+    private var initError: EmbedWidgetLoadError?
+
+    private enum InitState {
+        case idle
+        case loading
+        case ready
+        case failed
+    }
+
+    private struct InitContext: Equatable {
+        let pageUrl: String
+        let mid: String
+        let payloadSecret: String
+        let baseURL: String
+    }
+
     private struct CacheEntry {
         let pageInfo: [EmbedFolderInfo]
-        let timestamp: Date
     }
 
     struct WidgetLoadResult {
         let widgets: [EmbedFolderInfo]
+        let pageUrl: String
         let error: EmbedWidgetLoadError?
     }
-    
+
     private init() {}
 
     private func noDataResult(statusCode: EmbedWidgetLoadError.StatusCode, message: String, pageUrl: String, position: EmbedPosition) -> WidgetLoadResult {
         WidgetLoadResult(
             widgets: [],
+            pageUrl: pageUrl,
             error: EmbedWidgetLoadError(
                 statusCode: statusCode,
                 message: message,
@@ -387,6 +488,18 @@ public class EmbedWidgetDataManager: ObservableObject {
     }
 
     private func classifyError(_ error: Error, pageUrl: String, position: EmbedPosition) -> EmbedWidgetLoadError {
+        if let apiError = error as? EmbedAPI.EmbedAPIError {
+            switch apiError {
+            case .invalidPageID, .invalidPayloadSecret, .invalidPageURL, .encryptionFailed:
+                return EmbedWidgetLoadError(
+                    statusCode: .invalidInitPayload,
+                    message: "Initialization payload error: \(apiError.localizedDescription)",
+                    pageUrl: pageUrl,
+                    position: position
+                )
+            }
+        }
+
         if let urlError = error as? URLError {
             switch urlError.code {
             case .timedOut:
@@ -429,206 +542,148 @@ public class EmbedWidgetDataManager: ObservableObject {
             position: position
         )
     }
-    
-    /**
-     * @function getWidgetsForPosition
-     * @description Gets widgets for a specific position from cached data or fetches from API if needed.
-     *
-     * @param {String} pageUrl - The page URL where the widget is displayed.
-     * @param {EmbedPosition} position - The position where the widget should be displayed.
-     * @param {String?} productId - Optional product ID. If not provided, will be extracted from pageUrl.
-     * @param {String} platform - Platform identifier. Defaults to "91APP".
-     *
-     * @returns {[EmbedFolderInfo]} Array of embed folder information matching the specified position.
-     */
-    func getWidgetsForPosition(
-        pageUrl: String,
-        position: EmbedPosition,
-        productId: String? = nil,
-        platform: String = EmbedAPI.defaultPlatform
-    ) async -> [EmbedFolderInfo] {
-        let result = await getWidgetsForPositionResult(
-            pageUrl: pageUrl,
-            position: position,
-            productId: productId,
-            platform: platform
-        )
-        return result.widgets
-    }
 
-    func getWidgetsForPositionResult(
+    @discardableResult
+    public func initialize(
         pageUrl: String,
-        position: EmbedPosition,
-        productId: String? = nil,
-        platform: String = EmbedAPI.defaultPlatform
-    ) async -> WidgetLoadResult {
-        let cacheKey = pageUrl
-        let positionString = position.rawValue
-        
-        print("[EmbedWidgetDataManager] getWidgetsForPosition called - pageUrl: \(pageUrl), position: \(positionString)")
-        
-        // 檢查快取
-        if let cached = cache[cacheKey] {
-            print("[EmbedWidgetDataManager] Cache hit! Found \(cached.pageInfo.count) widgets in cache")
-            let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
-            print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-            if filtered.isEmpty {
-                if cached.pageInfo.isEmpty {
-                    return noDataResult(
-                        statusCode: .noData,
-                        message: "No data: API returned pageInfo as empty array.",
-                        pageUrl: pageUrl,
-                        position: position
-                    )
-                }
-                return noDataResult(
-                    statusCode: .noData,
-                    message: "No data: No widget available for this position after filtering.",
-                    pageUrl: pageUrl,
-                    position: position
-                )
-            }
-            return WidgetLoadResult(widgets: filtered, error: nil)
+        mid: String,
+        payloadSecret: String,
+        baseURL: String = EmbedAPI.defaultBaseURL,
+        forceRefresh: Bool = false
+    ) async -> EmbedWidgetLoadError? {
+        let context = InitContext(
+            pageUrl: pageUrl,
+            mid: mid,
+            payloadSecret: payloadSecret,
+            baseURL: baseURL
+        )
+
+        if !forceRefresh,
+           currentContext == context,
+           initState == .ready,
+           cache[pageUrl] != nil {
+            EmbedLogger.log("[EmbedWidgetDataManager] initialize cache hit, skip request. pageUrl=\(pageUrl)")
+            return nil
         }
-        
-        print("[EmbedWidgetDataManager] Cache miss")
-        
-        // 如果正在載入，等待載入完成
-        if let loadingTask = loadingTasks[cacheKey] {
-            print("[EmbedWidgetDataManager] Already loading, waiting for existing task...")
-            // 使用 Task.value 等待任務完成（忽略返回值）
-            let _: Void = await loadingTask.value
-            if let cached = cache[cacheKey] {
-                print("[EmbedWidgetDataManager] Load completed, found \(cached.pageInfo.count) widgets")
-                let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
-                print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-                if filtered.isEmpty {
-                    if cached.pageInfo.isEmpty {
-                        return noDataResult(
-                            statusCode: .noData,
-                            message: "No data: API returned pageInfo as empty array.",
-                            pageUrl: pageUrl,
-                            position: position
-                        )
-                    }
-                    return noDataResult(
-                        statusCode: .noData,
-                        message: "No data: No widget available for this position after filtering.",
-                        pageUrl: pageUrl,
-                        position: position
-                    )
-                }
-                return WidgetLoadResult(widgets: filtered, error: nil)
-            } else {
-                print("[EmbedWidgetDataManager] Load completed but cache is empty (possible error)")
-                if let loadError = lastLoadErrors[cacheKey] {
-                    return WidgetLoadResult(widgets: [], error: loadError)
-                }
-            }
+
+        if !forceRefresh,
+           currentContext == context,
+           initState == .loading,
+           let runningTask = initTask {
+            let _: Void = await runningTask.value
+            return initError
         }
-        
-        // 開始載入
-        let finalProductId = productId ?? EmbedAPI.extractProductIdFromPageUrl(pageUrl) ?? ""
-        print("[EmbedWidgetDataManager] Starting new load - productId: \(finalProductId), platform: \(platform)")
-        
-        guard !finalProductId.isEmpty else {
-            print("[EmbedWidgetDataManager] ERROR: productId is empty, returning empty array")
-            return WidgetLoadResult(
-                widgets: [],
-                error: EmbedWidgetLoadError(
-                    statusCode: .otherError,
-                    message: "Other error: Failed to extract productId from pageUrl.",
-                    pageUrl: pageUrl,
-                    position: position
-                )
-            )
+
+        if forceRefresh {
+            EmbedLogger.log("[EmbedWidgetDataManager] initialize forceRefresh=true, clearing cache for pageUrl=\(pageUrl)")
+            cache.removeValue(forKey: pageUrl)
         }
-        lastLoadErrors.removeValue(forKey: cacheKey)
-        
-        // 創建載入任務
+
+        currentContext = context
+        initError = nil
+        initState = .loading
+
         let task = Task { @MainActor in
             do {
-                print("[EmbedWidgetDataManager] Calling API fetchPageInfo...")
-                let response = try await EmbedAPI.fetchPageInfo(
-                    productId: finalProductId,
-                    platform: platform,
-                    pageUrl: pageUrl
+                let pageID = EmbedAPI.extractPageIdFromPageUrl(pageUrl) ?? "nil"
+                EmbedLogger.log("[EmbedWidgetDataManager] initialize start. pageUrl=\(pageUrl), pageId=\(pageID), mid=\(mid)")
+                let response = try await EmbedAPI.fetchPageBundle(
+                    pageUrl: pageUrl,
+                    mid: mid,
+                    payloadSecret: payloadSecret,
+                    baseURL: baseURL
                 )
-                
-                print("[EmbedWidgetDataManager] API call successful! Received \(response.pageInfo.count) widgets")
-                for (index, widget) in response.pageInfo.enumerated() {
-                    print("[EmbedWidgetDataManager] Widget[\(index)]: folderId=\(widget.folderId), embedLocation=\(widget.embedLocation ?? "nil"), layout=\(widget.layout ?? "nil")")
-                }
-                
-                self.cache[cacheKey] = CacheEntry(
-                    pageInfo: response.pageInfo,
-                    timestamp: Date()
+                EmbedLogger.log("[EmbedWidgetDataManager] initialize success. pageBundle.count=\(response.pageBundle.count)")
+                self.cache[pageUrl] = CacheEntry(
+                    pageInfo: response.pageBundle
                 )
-                self.lastLoadErrors.removeValue(forKey: cacheKey)
-                self.loadingTasks.removeValue(forKey: cacheKey)
-                print("[EmbedWidgetDataManager] Cache updated and loading task removed")
+                self.initState = .ready
             } catch {
-                print("[EmbedWidgetDataManager] ERROR in API call: \(error.localizedDescription)")
-                self.lastLoadErrors[cacheKey] = self.classifyError(error, pageUrl: pageUrl, position: position)
-                self.loadingTasks.removeValue(forKey: cacheKey)
+                self.initState = .failed
+                self.initError = self.classifyError(error, pageUrl: pageUrl, position: .BELOW_BUY_BUTTON)
+                EmbedLogger.log("[EmbedWidgetDataManager] initialize failed. error=\(self.initError?.message ?? error.localizedDescription)")
             }
         }
-        
-        loadingTasks[cacheKey] = task
-        print("[EmbedWidgetDataManager] Waiting for task to complete...")
-        // 使用 Task.value 等待任務完成（忽略返回值）
+
+        initTask = task
         let _: Void = await task.value
-        print("[EmbedWidgetDataManager] Task completed")
-        
-        // 載入完成後再次檢查快取
-        if let cached = cache[cacheKey] {
-            print("[EmbedWidgetDataManager] After load, found \(cached.pageInfo.count) widgets in cache")
-            let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
-            print("[EmbedWidgetDataManager] After filtering by position \(positionString): \(filtered.count) widgets")
-            if filtered.isEmpty {
-                if cached.pageInfo.isEmpty {
-                    return noDataResult(
-                        statusCode: .noData,
-                        message: "No data: API returned pageInfo as empty array.",
-                        pageUrl: pageUrl,
-                        position: position
-                    )
-                }
+        initTask = nil
+        return initError
+    }
+
+    func getWidgetsForPositionResult(position: EmbedPosition) async -> WidgetLoadResult {
+        guard let context = currentContext else {
+            return WidgetLoadResult(
+                widgets: [],
+                pageUrl: "",
+                error: EmbedWidgetLoadError(
+                    statusCode: .notInitialized,
+                    message: "SDK not initialized. Please call EmbedIOSSDK.initialize(pageUrl:mid:secret:) first.",
+                    pageUrl: "",
+                    position: position
+                )
+            )
+        }
+
+        if initState == .loading || initTask != nil {
+            return WidgetLoadResult(
+                widgets: [],
+                pageUrl: context.pageUrl,
+                error: EmbedWidgetLoadError(
+                    statusCode: .initializing,
+                    message: "SDK initialization is still in progress.",
+                    pageUrl: context.pageUrl,
+                    position: position
+                )
+            )
+        }
+
+        if initState == .failed, let initError {
+            return WidgetLoadResult(
+                widgets: [],
+                pageUrl: context.pageUrl,
+                error: initError.withPosition(position)
+            )
+        }
+
+        guard let cached = cache[context.pageUrl] else {
+            return WidgetLoadResult(
+                widgets: [],
+                pageUrl: context.pageUrl,
+                error: EmbedWidgetLoadError(
+                    statusCode: .systemError,
+                    message: "Initialization completed but cache data is missing.",
+                    pageUrl: context.pageUrl,
+                    position: position
+                )
+            )
+        }
+
+        let filtered = filterWidgetsByPosition(cached.pageInfo, position: position)
+        if filtered.isEmpty {
+            if cached.pageInfo.isEmpty {
                 return noDataResult(
                     statusCode: .noData,
-                    message: "No data: No widget available for this position after filtering.",
-                    pageUrl: pageUrl,
+                    message: "No data: API returned pageBundle as empty array.",
+                    pageUrl: context.pageUrl,
                     position: position
                 )
             }
-            return WidgetLoadResult(widgets: filtered, error: nil)
-        }
-
-        if let loadError = lastLoadErrors[cacheKey] {
-            print("[EmbedWidgetDataManager] Returning load error: statusCode=\(loadError.statusCode), message: \(loadError.message)")
-            return WidgetLoadResult(widgets: [], error: loadError)
-        }
-        
-        print("[EmbedWidgetDataManager] WARNING: Cache is still empty after load, returning empty array")
-        return WidgetLoadResult(
-            widgets: [],
-            error: EmbedWidgetLoadError(
-                statusCode: .otherError,
-                message: "Other error: Unknown error while loading widgets.",
-                pageUrl: pageUrl,
+            return noDataResult(
+                statusCode: .noData,
+                message: "No data: No widget available for this position after filtering.",
+                pageUrl: context.pageUrl,
                 position: position
             )
+        }
+
+        return WidgetLoadResult(
+            widgets: filtered,
+            pageUrl: context.pageUrl,
+            error: nil
         )
     }
-    
-    /**
-     * @function getFloatingMediaPositionForEmbedPosition
-     * @description Maps EmbedPosition to corresponding floatingMediaPosition value.
-     *
-     * @param {EmbedPosition} position - The EmbedPosition to map.
-     *
-     * @returns {String?} The corresponding floatingMediaPosition value, or nil if not a FIXED position.
-     */
+
     private func getFloatingMediaPositionForEmbedPosition(_ position: EmbedPosition) -> String? {
         switch position {
         case .FIXED_BOTTOM_LEFT:
@@ -647,94 +702,57 @@ public class EmbedWidgetDataManager: ObservableObject {
             return nil
         }
     }
-    
-    /**
-     * @function filterWidgetsByPosition
-     * @description Filters widgets by position and sorts them by timestamp.
-     *              For FIXED_* positions, matches FloatingMedia widgets by floatingMediaPosition.
-     *
-     * @param {[EmbedFolderInfo]} widgets - Array of widgets to filter.
-     * @param {EmbedPosition} position - The position to filter by.
-     *
-     * @returns {[EmbedFolderInfo]} Filtered and sorted widgets.
-     */
+
     private func filterWidgetsByPosition(_ widgets: [EmbedFolderInfo], position: EmbedPosition) -> [EmbedFolderInfo] {
         let positionString = position.rawValue
         let expectedFloatingMediaPosition = getFloatingMediaPositionForEmbedPosition(position)
         let isFixedPosition = expectedFloatingMediaPosition != nil
-        print("[EmbedWidgetDataManager] filterWidgetsByPosition - input: \(widgets.count) widgets, position: \(positionString), isFixedPosition: \(isFixedPosition), expectedFloatingMediaPosition: \(expectedFloatingMediaPosition ?? "nil")")
-        
+
         let filteredWidgets = widgets.filter { folderInfo in
             let isFloatingMedia = folderInfo.layout?.lowercased() == "floatingmedia"
-            
-            // 如果是 FIXED_* 位置，需要匹配 FloatingMedia 的 floatingMediaPosition
+
             if isFixedPosition {
                 if isFloatingMedia {
-                    let widgetFloatingMediaPosition = folderInfo.floatingMediaPosition
-                    let matches = widgetFloatingMediaPosition == expectedFloatingMediaPosition
-                    if matches {
-                        print("[EmbedWidgetDataManager] Filter: Including FloatingMedia widget \(folderInfo.folderId) - floatingMediaPosition '\(widgetFloatingMediaPosition ?? "nil")' matches position \(positionString)")
-                    } else {
-                        print("[EmbedWidgetDataManager] Filter: Excluding FloatingMedia widget \(folderInfo.folderId) - floatingMediaPosition '\(widgetFloatingMediaPosition ?? "nil")' != expected '\(expectedFloatingMediaPosition ?? "nil")'")
-                    }
-                    return matches
-                } else {
-                    // FIXED_* 位置只顯示 FloatingMedia widgets
-                    print("[EmbedWidgetDataManager] Filter: Excluding non-FloatingMedia widget \(folderInfo.folderId) for FIXED position \(positionString)")
-                    return false
+                    let widgetFloatingMediaPosition = folderInfo.resolvedFloatingMediaPosition
+                    return widgetFloatingMediaPosition == expectedFloatingMediaPosition
                 }
-            }
-            
-            // 非 FIXED 位置：不允許顯示 FloatingMedia widgets
-            if isFloatingMedia {
-                print("[EmbedWidgetDataManager] Filter: Excluding FloatingMedia widget \(folderInfo.folderId) - FloatingMedia can only be displayed in FIXED_* positions")
                 return false
             }
-            
-            // 正常過濾：根據 embedLocation 匹配（非 FIXED 位置，且非 FloatingMedia）
+
+            if isFloatingMedia {
+                return false
+            }
+
             if let embedLocation = folderInfo.embedLocation {
                 let embedLocationUpper = embedLocation.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
                 let positionStringTrimmed = positionString.trimmingCharacters(in: .whitespacesAndNewlines)
-                let matches = embedLocationUpper == positionStringTrimmed
-                if !matches {
-                    print("[EmbedWidgetDataManager] Filter: widget \(folderInfo.folderId) location '\(embedLocationUpper)' != '\(positionStringTrimmed)'")
-                } else {
-                    print("[EmbedWidgetDataManager] Filter: widget \(folderInfo.folderId) location '\(embedLocationUpper)' matches '\(positionStringTrimmed)'")
-                }
-                return matches
+                return embedLocationUpper == positionStringTrimmed
             }
-            print("[EmbedWidgetDataManager] Filter: widget \(folderInfo.folderId) has no embedLocation")
             return false
         }
-        
-        print("[EmbedWidgetDataManager] filterWidgetsByPosition - after filter: \(filteredWidgets.count) widgets")
-        
-        // 對過濾後的 widgets 進行排序：按照 timestamp 降序（較新的先顯示）
-        let sortedWidgets = filteredWidgets.sorted { folderInfo1, folderInfo2 in
+
+        return filteredWidgets.sorted { folderInfo1, folderInfo2 in
             let timestamp1 = folderInfo1.timestamp ?? 0
             let timestamp2 = folderInfo2.timestamp ?? 0
             return timestamp1 > timestamp2
         }
-        
-        print("[EmbedWidgetDataManager] filterWidgetsByPosition - after sort: \(sortedWidgets.count) widgets")
-        return sortedWidgets
     }
-    
-    /**
-     * @function clearCache
-     * @description Clears the cache for a specific page URL or all cache.
-     *
-     * @param {String?} pageUrl - Optional page URL to clear. If nil, clears all cache.
-     */
+
     public func clearCache(for pageUrl: String? = nil) {
         if let pageUrl = pageUrl {
             cache.removeValue(forKey: pageUrl)
-            loadingTasks.removeValue(forKey: pageUrl)
-            lastLoadErrors.removeValue(forKey: pageUrl)
+            if currentContext?.pageUrl == pageUrl {
+                currentContext = nil
+                initTask = nil
+                initState = .idle
+                initError = nil
+            }
         } else {
             cache.removeAll()
-            loadingTasks.removeAll()
-            lastLoadErrors.removeAll()
+            currentContext = nil
+            initTask = nil
+            initState = .idle
+            initError = nil
         }
     }
 }
@@ -742,151 +760,68 @@ public class EmbedWidgetDataManager: ObservableObject {
 // MARK: - EmbedWidgetView (SwiftUI - Auto-loading by position)
 /**
  * @struct EmbedWidgetView
- * @description A SwiftUI view that automatically loads and displays embed widgets based on page URL and position.
- *              This view uses a shared data manager to avoid multiple API calls for the same page URL.
+ * @description A SwiftUI view that automatically loads and displays embed widgets by position.
+ *              Data source comes from shared initialization cache.
  */
 @available(iOS 16.0, *)
 public struct EmbedWidgetView: View {
-    private let pageUrl: String
     private let position: EmbedPosition
-    private let productId: String?
-    private let platform: String
     private let onError: ((EmbedWidgetLoadError) -> Void)?
     
     @State private var folderInfos: [EmbedFolderInfo] = []
+    @State private var currentPageUrl: String = ""
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
     @State private var hasStartedLoading: Bool = false
+    @State private var initRetryCount: Int = 0
+    private let maxInitRetryCount: Int = 20
     
     /**
      * @function init
-     * @description Initializes EmbedWidgetView with page URL and position.
-     *              Product ID will be automatically extracted from pageUrl, and platform defaults to "91APP".
+     * @description Initializes EmbedWidgetView with position only.
+     *              Data must already be initialized via EmbedIOSSDK.initialize(pageUrl:mid:secret:).
      *
-     * @param {String} pageUrl - The page URL where the widget is displayed.
      * @param {EmbedPosition} position - The position where the widget should be displayed.
      * @param {(EmbedWidgetLoadError) -> Void?} onError - Optional callback when SDK load fails and widget cannot render.
      *
      * @returns {EmbedWidgetView} A new EmbedWidgetView instance.
      */
     public init(
-        pageUrl: String,
         position: EmbedPosition,
         onError: ((EmbedWidgetLoadError) -> Void)? = nil
     ) {
-        self.pageUrl = pageUrl
         self.position = position
         self.onError = onError
-        // 自動從 pageUrl 提取 productId（使用與 JavaScript getProductId() 相同的邏輯）
-        self.productId = EmbedAPI.extractProductIdFromPageUrl(pageUrl)
-        // 使用預設平台
-        self.platform = EmbedAPI.defaultPlatform
     }
     
     public var body: some View {
-        // 在 body 第一次計算時就開始載入（不等待 onAppear，確保即使不在可見區域也會載入）
         if !hasStartedLoading {
             DispatchQueue.main.async {
                 if !self.hasStartedLoading {
                     self.hasStartedLoading = true
-                    print("[EmbedWidgetView] body - First render, triggering load for position: \(self.position.rawValue)")
+                    EmbedLogger.log("[EmbedWidgetView] body - first render load for position: \(self.position.rawValue)")
                     Task {
                         await self.loadWidgets()
                     }
                 }
             }
         }
-        
+
         return Group {
             if isLoading {
-                // 載入中時不顯示任何內容（或可選擇顯示載入指示器）
                 EmptyView()
-                    .onAppear {
-                        print("[EmbedWidgetView] body - Rendering: isLoading=true")
-                    }
             } else if errorMessage != nil {
-                // 錯誤時不顯示任何內容（或可選擇顯示錯誤訊息）
                 EmptyView()
-                    .onAppear {
-                        print("[EmbedWidgetView] body - Rendering: error=\(self.errorMessage ?? "unknown")")
-                    }
             } else if folderInfos.isEmpty {
-                // 沒有資料時不顯示
                 EmptyView()
-                    .onAppear {
-                        print("[EmbedWidgetView] body - Rendering: folderInfos.isEmpty=true")
-                    }
             } else {
-                // 過濾 widgets：對於 FIXED_* 位置，需要匹配 FloatingMedia 的 floatingMediaPosition
-                let expectedFloatingMediaPosition: String? = {
-                    switch position {
-                    case .FIXED_BOTTOM_LEFT:
-                        return "BottomLeft"
-                    case .FIXED_BOTTOM_RIGHT:
-                        return "BottomRight"
-                    case .FIXED_TOP_LEFT:
-                        return "TopLeft"
-                    case .FIXED_TOP_RIGHT:
-                        return "TopRight"
-                    case .FIXED_CENTER_LEFT:
-                        return "CenterLeft"
-                    case .FIXED_CENTER_RIGHT:
-                        return "CenterRight"
-                    default:
-                        return nil
-                    }
-                }()
-                let isFixedPosition = expectedFloatingMediaPosition != nil
-                
-                let filteredWidgets = folderInfos.filter { folderInfo in
-                    let isFloatingMedia = folderInfo.layout?.lowercased() == "floatingmedia"
-                    
-                    print("[EmbedWidgetView] Filtering widget - folderId: \(folderInfo.folderId), layout: \(folderInfo.layout ?? "nil"), position: \(position.rawValue), isFloatingMedia: \(isFloatingMedia), isFixedPosition: \(isFixedPosition)")
-                    
-                    // 如果是 FIXED_* 位置，需要匹配 FloatingMedia 的 floatingMediaPosition
-                    if isFixedPosition {
-                        if isFloatingMedia {
-                            let widgetFloatingMediaPosition = folderInfo.floatingMediaPosition
-                            let shouldShow = widgetFloatingMediaPosition == expectedFloatingMediaPosition
-                            print("[EmbedWidgetView] FloatingMedia widget - floatingMediaPosition: '\(widgetFloatingMediaPosition ?? "nil")', expected: '\(expectedFloatingMediaPosition ?? "nil")', shouldShow: \(shouldShow)")
-                            return shouldShow
-                        } else {
-                            // FIXED_* 位置只顯示 FloatingMedia widgets
-                            print("[EmbedWidgetView] Non-FloatingMedia widget for FIXED position - excluding")
-                            return false
-                        }
-                    }
-                    
-                    // 非 FIXED 位置：不允許顯示 FloatingMedia widgets
-                    if isFloatingMedia {
-                        print("[EmbedWidgetView] Excluding FloatingMedia widget - FloatingMedia can only be displayed in FIXED_* positions")
-                        return false
-                    }
-                    
-                    // 如果不是 FIXED 位置，且不是 FloatingMedia，正常顯示
-                    print("[EmbedWidgetView] Non-FIXED position widget (non-FloatingMedia) - showing")
-                    return true
-                }
-                
-                if filteredWidgets.isEmpty {
-                    // 過濾後沒有資料時不顯示
-                    EmptyView()
-                        .onAppear {
-                            print("[EmbedWidgetView] body - Rendering: All widgets filtered out for position \(self.position.rawValue)")
-                        }
-                } else {
-                    // 有資料時顯示所有匹配的 widgets（依序垂直排列）
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(filteredWidgets, id: \.folderId) { folderInfo in
-                            EmbedView(folderInfo: folderInfo, pageUrl: pageUrl)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .onAppear {
-                        print("[EmbedWidgetView] body - Rendering: \(filteredWidgets.count) widgets (filtered from \(self.folderInfos.count)) for position \(self.position.rawValue)")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(folderInfos, id: \.folderId) { folderInfo in
+                        EmbedView(folderInfo: folderInfo, pageUrl: currentPageUrl)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -897,75 +832,70 @@ public struct EmbedWidgetView: View {
      *              Uses cached data if available to avoid multiple API calls.
      */
     private func loadWidgets() async {
-        print("[EmbedWidgetView] loadWidgets called - pageUrl: \(pageUrl), position: \(position.rawValue)")
+        EmbedLogger.log("[EmbedWidgetView] loadWidgets called - position: \(position.rawValue)")
         
         // 使用 MainActor 確保狀態檢查和設置是原子操作
         let shouldLoad = await MainActor.run {
             if self.isLoading {
-                print("[EmbedWidgetView] Already loading, skipping...")
+                EmbedLogger.log("[EmbedWidgetView] Already loading, skipping...")
                 return false
             }
             if self.hasStartedLoading && !self.folderInfos.isEmpty {
-                print("[EmbedWidgetView] Already loaded with \(self.folderInfos.count) widgets, skipping...")
+                EmbedLogger.log("[EmbedWidgetView] Already loaded with \(self.folderInfos.count) widgets, skipping...")
                 return false
             }
-            // 設置載入狀態
-            print("[EmbedWidgetView] Setting loading state to true")
+            EmbedLogger.log("[EmbedWidgetView] Setting loading state to true")
             self.isLoading = true
             self.errorMessage = nil
             return true
         }
         
         guard shouldLoad else {
-            print("[EmbedWidgetView] Should not load, returning early")
+            EmbedLogger.log("[EmbedWidgetView] Should not load, returning early")
             return
         }
-        
-        print("[EmbedWidgetView] Calling EmbedWidgetDataManager.shared.getWidgetsForPosition...")
-        
-        // 使用共享資料管理器，避免重複 API 呼叫
-        let result = await EmbedWidgetDataManager.shared.getWidgetsForPositionResult(
-            pageUrl: pageUrl,
-            position: position,
-            productId: productId,
-            platform: platform
-        )
+
+        let result = await EmbedWidgetDataManager.shared.getWidgetsForPositionResult(position: position)
         let widgets = result.widgets
-        
-        print("[EmbedWidgetView] Received \(widgets.count) widgets from data manager")
+        EmbedLogger.log("[EmbedWidgetView] Received \(widgets.count) widgets from data manager")
 
         if let loadError = result.error {
+            let isInitStateError =
+                loadError.statusCode == EmbedWidgetLoadError.StatusCode.initializing.rawValue ||
+                loadError.statusCode == EmbedWidgetLoadError.StatusCode.notInitialized.rawValue
+
+            if isInitStateError && initRetryCount < maxInitRetryCount {
+                await MainActor.run {
+                    self.isLoading = false
+                    self.errorMessage = nil
+                    self.currentPageUrl = result.pageUrl
+                    self.initRetryCount += 1
+                }
+
+                // Wait for initialization to complete, then retry.
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                await loadWidgets()
+                return
+            }
+
             await MainActor.run {
-                print("[EmbedWidgetView] ERROR: statusCode=\(loadError.statusCode), message: \(loadError.message)")
+                EmbedLogger.log("[EmbedWidgetView] ERROR: statusCode=\(loadError.statusCode), message: \(loadError.message)")
                 self.errorMessage = loadError.message
                 self.folderInfos = []
+                self.currentPageUrl = result.pageUrl
                 self.isLoading = false
                 self.onError?(loadError)
             }
             return
         }
         
-        // 載入完成後進行 log（僅在第一次載入時）
-        if !widgets.isEmpty {
-            let positionString = position.rawValue
-            print("[EmbedWidgetView] === Widgets for position \(positionString) ===")
-            for folderInfo in widgets {
-                print("[EmbedWidgetView] position: \(positionString)")
-                print("[EmbedWidgetView] folderId: \(folderInfo.folderId)")
-                print("[EmbedWidgetView] folderName: \(folderInfo.folderName ?? "nil")")
-                print("[EmbedWidgetView] layout: \(folderInfo.layout ?? "nil")")
-                print("[EmbedWidgetView] embedLocation: \(folderInfo.embedLocation ?? "nil")")
-                print("[EmbedWidgetView] ---")
-            }
-        } else {
-            print("[EmbedWidgetView] WARNING: No widgets returned for position \(position.rawValue)")
-        }
+        EmbedLogger.log("[EmbedWidgetView] Widgets for position \(position.rawValue): \(widgets.count)")
         
         await MainActor.run {
-            print("[EmbedWidgetView] Updating folderInfos with \(widgets.count) widgets")
             self.folderInfos = widgets
+            self.currentPageUrl = result.pageUrl
             self.isLoading = false
-            print("[EmbedWidgetView] Loading complete, isLoading set to false")
+            self.initRetryCount = 0
         }
     }
 }
@@ -1460,14 +1390,14 @@ struct LightboxWebView: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            print("[LightboxWebView] Navigation failed: \(error.localizedDescription)")
+            EmbedLogger.log("[LightboxWebView] Navigation failed: \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in
                 self?.loadFailed = true
             }
         }
         
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            print("[LightboxWebView] Provisional navigation failed: \(error.localizedDescription)")
+            EmbedLogger.log("[LightboxWebView] Provisional navigation failed: \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in
                 self?.loadFailed = true
             }

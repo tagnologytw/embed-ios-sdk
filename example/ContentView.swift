@@ -5,7 +5,9 @@ import WebKit
 struct ProductPageView: View {
     // 當前頁面的 URL
     @State private var pageUrl: String = "https://partnertest3.91app.com/SalePage/Index/8555569"
-	@State private var productId: String = "8555569"
+    @State private var mid: String = "41458"
+    @State private var secretKey: String = "P5Sayl2krqbPV8ORsekcSDoWFUEiurKW2WMbm62b5Cs="
+    @State private var isEmbedInitialized: Bool = false
     
     // 一般版位 widgets 的顯示狀態
     @State private var showBelowBuyButtonWidget: Bool = true
@@ -66,9 +68,8 @@ struct ProductPageView: View {
                             PurchaseCTASection()
                             
                             // 在購買按鈕下方顯示 widget
-                            if showBelowBuyButtonWidget {
+                            if isEmbedInitialized && showBelowBuyButtonWidget {
                                 EmbedWidgetView(
-                                    pageUrl: pageUrl,
                                     position: EmbedIOSSDK.BELOW_BUY_BUTTON,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowBuyButtonWidget, slotName: "BELOW_BUY_BUTTON")
@@ -86,9 +87,8 @@ struct ProductPageView: View {
                             ProductDetailsSection()
                             
                             // 在商品特色區塊下方顯示 widget
-                            if showBelowMainProductInfoWidget {
+                            if isEmbedInitialized && showBelowMainProductInfoWidget {
                                 EmbedWidgetView(
-                                    pageUrl: pageUrl,
                                     position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowMainProductInfoWidget, slotName: "BELOW_MAIN_PRODUCT_INFO")
@@ -99,9 +99,8 @@ struct ProductPageView: View {
                             PaymentShippingSection(paymentOptions: paymentOptions, shippingMethods: shippingMethods)
 
 							  // 在推薦區塊上方顯示 widget
-                            if showAboveRecommendationWidget {
+                            if isEmbedInitialized && showAboveRecommendationWidget {
                                 EmbedWidgetView(
-                                    pageUrl: pageUrl,
                                     position: EmbedIOSSDK.ABOVE_RECOMMENDATION,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showAboveRecommendationWidget, slotName: "ABOVE_RECOMMENDATION")
@@ -127,12 +126,11 @@ struct ProductPageView: View {
             // 固定位置的 FloatingMedia widgets
             ZStack {
                 // 左下角
-                if showFixedBottomLeftWidget {
+                if isEmbedInitialized && showFixedBottomLeftWidget {
                     VStack {
                         Spacer()
                         HStack {
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
                                 hasContent: $hasFixedBottomLeftContent,
                                 onError: { error in
@@ -147,13 +145,12 @@ struct ProductPageView: View {
                 }
                 
                 // 右下角
-                if showFixedBottomRightWidget {
+                if isEmbedInitialized && showFixedBottomRightWidget {
                     VStack {
                         Spacer()
                         HStack {
                             Spacer()
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_BOTTOM_RIGHT,
                                 hasContent: $hasFixedBottomRightContent,
                                 onError: { error in
@@ -167,11 +164,10 @@ struct ProductPageView: View {
                 }
                 
                 // 左上角
-                if showFixedTopLeftWidget {
+                if isEmbedInitialized && showFixedTopLeftWidget {
                     VStack {
                         HStack {
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_TOP_LEFT,
                                 hasContent: $hasFixedTopLeftContent,
                                 onError: { error in
@@ -188,12 +184,11 @@ struct ProductPageView: View {
                 }
                 
                 // 右上角
-                if showFixedTopRightWidget {
+                if isEmbedInitialized && showFixedTopRightWidget {
                     VStack {
                         HStack {
                             Spacer()
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_TOP_RIGHT,
                                 hasContent: $hasFixedTopRightContent,
                                 onError: { error in
@@ -209,12 +204,11 @@ struct ProductPageView: View {
                 }
                 
                 // 左側中央
-                if showFixedCenterLeftWidget {
+                if isEmbedInitialized && showFixedCenterLeftWidget {
                     VStack {
                         Spacer()
                         HStack {
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_CENTER_LEFT,
                                 hasContent: $hasFixedCenterLeftContent,
                                 onError: { error in
@@ -229,13 +223,12 @@ struct ProductPageView: View {
                 }
                 
                 // 右側中央
-                if showFixedCenterRightWidget {
+                if isEmbedInitialized && showFixedCenterRightWidget {
                     VStack {
                         Spacer()
                         HStack {
                             Spacer()
                             FixedFloatingMediaWidgetView(
-                                pageUrl: pageUrl,
                                 position: EmbedIOSSDK.FIXED_CENTER_RIGHT,
                                 hasContent: $hasFixedCenterRightContent,
                                 onError: { error in
@@ -255,15 +248,29 @@ struct ProductPageView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             clearWebViewCache()
-            
-            // 5 秒後檢查所有固定位置的 widgets，沒有內容則隱藏
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                checkAndHideWidgetIfNoContent(show: $showFixedBottomLeftWidget, hasContent: hasFixedBottomLeftContent)
-                checkAndHideWidgetIfNoContent(show: $showFixedBottomRightWidget, hasContent: hasFixedBottomRightContent)
-                checkAndHideWidgetIfNoContent(show: $showFixedTopLeftWidget, hasContent: hasFixedTopLeftContent)
-                checkAndHideWidgetIfNoContent(show: $showFixedTopRightWidget, hasContent: hasFixedTopRightContent)
-                checkAndHideWidgetIfNoContent(show: $showFixedCenterLeftWidget, hasContent: hasFixedCenterLeftContent)
-                checkAndHideWidgetIfNoContent(show: $showFixedCenterRightWidget, hasContent: hasFixedCenterRightContent)
+            Task {
+                let initError = await EmbedIOSSDK.initialize(
+                    pageUrl: pageUrl,
+                    mid: mid,
+                    secret: secretKey,
+                    forceRefresh: true
+                )
+                if let initError {
+                    print("[ProductPageView] Embed init failed, statusCode=\(initError.statusCode), message=\(initError.message)")
+                    return
+                }
+
+                isEmbedInitialized = true
+
+                // 5 秒後檢查所有固定位置的 widgets，沒有內容則隱藏
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                    checkAndHideWidgetIfNoContent(show: $showFixedBottomLeftWidget, hasContent: hasFixedBottomLeftContent)
+                    checkAndHideWidgetIfNoContent(show: $showFixedBottomRightWidget, hasContent: hasFixedBottomRightContent)
+                    checkAndHideWidgetIfNoContent(show: $showFixedTopLeftWidget, hasContent: hasFixedTopLeftContent)
+                    checkAndHideWidgetIfNoContent(show: $showFixedTopRightWidget, hasContent: hasFixedTopRightContent)
+                    checkAndHideWidgetIfNoContent(show: $showFixedCenterLeftWidget, hasContent: hasFixedCenterLeftContent)
+                    checkAndHideWidgetIfNoContent(show: $showFixedCenterRightWidget, hasContent: hasFixedCenterRightContent)
+                }
             }
         }
         }
@@ -278,6 +285,12 @@ struct ProductPageView: View {
     }
     
     private func handleWidgetSDKCallback(error: EmbedWidgetLoadError, show: Binding<Bool>, slotName: String) {
+        if error.statusCode == EmbedWidgetLoadError.StatusCode.initializing.rawValue ||
+            error.statusCode == EmbedWidgetLoadError.StatusCode.notInitialized.rawValue {
+            print("[ProductPageView] Slot \(slotName) waiting for init, statusCode=\(error.statusCode), message=\(error.message)")
+            return
+        }
+
         // 非 200 皆視為需要隱藏版位
         if error.statusCode != 200 {
             print("[ProductPageView] Hide slot \(slotName) due to SDK callback statusCode=\(error.statusCode), message=\(error.message)")
@@ -888,7 +901,6 @@ struct ContentView: View {
  * @description 通用的固定位置 FloatingMedia widget view，用於顯示所有 FIXED_* 位置的 widgets
  */
 struct FixedFloatingMediaWidgetView: View {
-    let pageUrl: String
     let position: EmbedIOSSDK.Position
     @Binding var hasContent: Bool
     let onError: (EmbedWidgetLoadError) -> Void
@@ -898,7 +910,7 @@ struct FixedFloatingMediaWidgetView: View {
     private let widgetSize = CGSize(width: 126, height: 224)
     
     var body: some View {
-        EmbedWidgetView(pageUrl: pageUrl, position: position, onError: onError)
+        EmbedWidgetView(position: position, onError: onError)
             .frame(width: widgetSize.width, height: widgetSize.height)
             .background(
                 GeometryReader { geometry in
