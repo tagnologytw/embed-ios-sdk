@@ -74,6 +74,9 @@ struct ProductPageView: View {
                                     position: EmbedIOSSDK.BELOW_BUY_BUTTON,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowBuyButtonWidget, slotName: "BELOW_BUY_BUTTON")
+                                    },
+                                    onClick: { click in
+                                        handleWidgetClick(click, slotName: "BELOW_BUY_BUTTON")
                                     }
                                 )
                             }
@@ -93,6 +96,9 @@ struct ProductPageView: View {
                                     position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowMainProductInfoWidget, slotName: "BELOW_MAIN_PRODUCT_INFO")
+                                    },
+                                    onClick: { click in
+                                        handleWidgetClick(click, slotName: "BELOW_MAIN_PRODUCT_INFO")
                                     }
                                 )
                             }
@@ -105,6 +111,9 @@ struct ProductPageView: View {
                                     position: EmbedIOSSDK.ABOVE_RECOMMENDATION,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showAboveRecommendationWidget, slotName: "ABOVE_RECOMMENDATION")
+                                    },
+                                    onClick: { click in
+                                        handleWidgetClick(click, slotName: "ABOVE_RECOMMENDATION")
                                     }
                                 )
                             }
@@ -324,6 +333,12 @@ struct ProductPageView: View {
                 show.wrappedValue = false
             }
         }
+    }
+
+    private func handleWidgetClick(_ click: EmbedWidgetClickEvent, slotName: String) {
+        print(
+            "[ProductPageView] onClick slot=\(slotName), folderId=\(click.folderId), folderName=\(click.folderName ?? "nil"), position=\(click.position ?? "nil"), mediaId=\(click.mediaId ?? "nil"), url=\(click.url ?? "nil")"
+        )
     }
     
     /**
