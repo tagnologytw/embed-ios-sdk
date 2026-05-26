@@ -30,6 +30,245 @@ enum EmbedLogger {
     }
 }
 
+// MARK: - Analytics
+enum EmbedAction: String {
+    case pageView = "PAGE_VIEW"
+    case embedView = "EMBED_VIEW"
+    case dwellTime = "DWELL_TIME"
+}
+
+struct EmbedLogEntry {
+    let action: EmbedAction
+    let info: [String: Any]
+}
+
+final class EmbedAnalyticsManager {
+    static let shared = EmbedAnalyticsManager()
+
+    private var currentPageUrl: String?
+    private var currentHost: String?
+    private var currentBaseURL: String?
+    private var folderInfosById: [String: EmbedFolderInfo] = [:]
+    private var folderIds: [String] = []
+    private var loggedEmbedFolderIds = Set<String>()
+    private var hasLoggedPageView = false
+    private var startTimeMs: Int64?
+    private var startWidgetTimeMs: Int64?
+    private var dwellTimeSent = false
+
+    private var nowProvider: () -> Date = Date.init
+    private var requestSender: (URLRequest) -> Void = { request in
+        URLSession.shared.dataTask(with: request).resume()
+    }
+
+    private init() {}
+
+    private func nowMs() -> Int64 {
+        Int64(nowProvider().timeIntervalSince1970 * 1000)
+    }
+
+    private func buildWidgetLogURL(baseURL: String) -> URL? {
+        let trimmed = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        return URL(string: "\(trimmed)/widget/log")
+    }
+
+    private func sendLog(_ entry: EmbedLogEntry, baseURL: String) {
+        guard let host = currentHost,
+              let page = currentPageUrl,
+              let url = buildWidgetLogURL(baseURL: baseURL) else {
+            return
+        }
+
+        let payload: [String: Any] = [
+            "host": host,
+            "action": entry.action.rawValue,
+            "info": entry.info.merging([
+                "page": page,
+                "isMobile": true
+            ]) { current, _ in current }
+        ]
+
+        guard JSONSerialization.isValidJSONObject(payload),
+              let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
+            return
+        }
+
+        if let payloadString = String(data: bodyData, encoding: .utf8) {
+            print("[EmbedAnalytics] POST \(url.absoluteString) action=\(entry.action.rawValue) payload=\(payloadString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+        requestSender(request)
+    }
+
+    func beginPageIfNeeded(pageUrl: String, folderInfos: [EmbedFolderInfo], baseURL: String, forceNewSession: Bool = false) {
+        let isNewPage = currentPageUrl != pageUrl
+        if isNewPage || forceNewSession {
+            currentPageUrl = pageUrl
+            currentHost = URL(string: pageUrl)?.host
+            currentBaseURL = baseURL
+            folderInfosById.removeAll()
+            folderIds = []
+            loggedEmbedFolderIds.removeAll()
+            hasLoggedPageView = false
+            startTimeMs = nowMs()
+            startWidgetTimeMs = nil
+            dwellTimeSent = false
+            print("[EmbedAnalytics] session started page=\(pageUrl) forceNewSession=\(forceNewSession)")
+        }
+
+        var uniqueFolderIds = [String]()
+        var seenFolderIds = Set<String>()
+        for info in folderInfos {
+            folderInfosById[info.folderId] = info
+            if seenFolderIds.insert(info.folderId).inserted {
+                uniqueFolderIds.append(info.folderId)
+            }
+        }
+        folderIds = uniqueFolderIds
+
+        if !hasLoggedPageView, !folderIds.isEmpty {
+            hasLoggedPageView = true
+            sendLog(
+                EmbedLogEntry(
+                    action: .pageView,
+                    info: ["folderIds": folderIds]
+                ),
+                baseURL: baseURL
+            )
+        } else if folderIds.isEmpty {
+            print("[EmbedAnalytics] skip PAGE_VIEW because /91app/pageBundle returned empty pageBundle")
+        }
+    }
+
+    @discardableResult
+    func markWidgetVisible(folderId: String, baseURL: String) -> Bool {
+        guard !folderId.isEmpty else { return false }
+        let activeBaseURL = currentBaseURL ?? baseURL
+        guard let folderInfo = folderInfosById[folderId] else {
+            // Session is not ready yet (or no pageBundle data), wait for the next visibility check.
+            return false
+        }
+        if startWidgetTimeMs == nil {
+            startWidgetTimeMs = nowMs()
+        }
+        if loggedEmbedFolderIds.contains(folderId) {
+            return false
+        }
+        loggedEmbedFolderIds.insert(folderId)
+
+        if folderInfo.layout?.lowercased() == "floatingmedia" {
+            return true
+        }
+
+        sendLog(
+            EmbedLogEntry(
+                action: .embedView,
+                info: [
+                    "folderId": folderId,
+                    "embedLocation": folderInfo.embedLocation ?? "CUSTOMIZED"
+                ]
+            ),
+            baseURL: activeBaseURL
+        )
+        return true
+    }
+
+    func endPageIfNeeded(baseURL: String, minDurationMs: Int64 = 5000) {
+        guard let startTimeMs, !dwellTimeSent else { return }
+        let activeBaseURL = currentBaseURL ?? baseURL
+        let currentMs = nowMs()
+        let dwellTime = currentMs - startTimeMs
+        guard dwellTime > minDurationMs else {
+            print("[EmbedAnalytics] skip DWELL_TIME because dwellTime=\(dwellTime) <= \(minDurationMs)")
+            return
+        }
+        guard !folderIds.isEmpty else {
+            print("[EmbedAnalytics] skip DWELL_TIME because pageBundle is empty (no folderIds)")
+            return
+        }
+
+        let widgetDwellTime: Int64 = {
+            guard let startWidgetTimeMs else { return 0 }
+            return max(currentMs - startWidgetTimeMs, 0)
+        }()
+
+        for folderId in folderIds {
+            sendLog(
+                EmbedLogEntry(
+                    action: .dwellTime,
+                    info: [
+                        "folderId": folderId,
+                        "dwellTime": dwellTime,
+                        "widgetDwellTime": widgetDwellTime
+                    ]
+                ),
+                baseURL: activeBaseURL
+            )
+        }
+
+        dwellTimeSent = true
+        print("[EmbedAnalytics] DWELL_TIME sent for \(folderIds.count) folderIds")
+    }
+
+#if DEBUG
+    func _resetForTests() {
+        currentPageUrl = nil
+        currentHost = nil
+        currentBaseURL = nil
+        folderInfosById.removeAll()
+        folderIds = []
+        loggedEmbedFolderIds.removeAll()
+        hasLoggedPageView = false
+        startTimeMs = nil
+        startWidgetTimeMs = nil
+        dwellTimeSent = false
+        nowProvider = Date.init
+        requestSender = { _ in }
+    }
+
+    func _setNowProviderForTests(_ provider: @escaping () -> Date) {
+        nowProvider = provider
+    }
+
+    func _setRequestSenderForTests(_ sender: @escaping (URLRequest) -> Void) {
+        requestSender = sender
+    }
+#endif
+}
+
+#if DEBUG
+public enum EmbedAnalyticsTestingHook {
+    public static func reset() {
+        EmbedAnalyticsManager.shared._resetForTests()
+    }
+
+    public static func setNowProvider(_ provider: @escaping () -> Date) {
+        EmbedAnalyticsManager.shared._setNowProviderForTests(provider)
+    }
+
+    public static func setRequestSender(_ sender: @escaping (URLRequest) -> Void) {
+        EmbedAnalyticsManager.shared._setRequestSenderForTests(sender)
+    }
+
+    public static func beginPage(pageUrl: String, folderInfos: [EmbedFolderInfo], baseURL: String = EmbedAPI.defaultBaseURL) {
+        EmbedAnalyticsManager.shared.beginPageIfNeeded(pageUrl: pageUrl, folderInfos: folderInfos, baseURL: baseURL)
+    }
+
+    public static func markWidgetVisible(folderId: String, baseURL: String = EmbedAPI.defaultBaseURL) {
+        EmbedAnalyticsManager.shared.markWidgetVisible(folderId: folderId, baseURL: baseURL)
+    }
+
+    public static func endPage(baseURL: String = EmbedAPI.defaultBaseURL, minDurationMs: Int64 = 5000) {
+        EmbedAnalyticsManager.shared.endPageIfNeeded(baseURL: baseURL, minDurationMs: minDurationMs)
+    }
+}
+#endif
+
 // MARK: - Position Enum
 /**
  * @enum EmbedPosition
@@ -96,6 +335,11 @@ public enum EmbedIOSSDK {
             baseURL: baseURL,
             forceRefresh: forceRefresh
         )
+    }
+
+    public static func notifyPageDidLeave(baseURL: String = EmbedAPI.defaultBaseURL) {
+        print("[EmbedAnalytics] notifyPageDidLeave called")
+        EmbedAnalyticsManager.shared.endPageIfNeeded(baseURL: baseURL)
     }
 }
 
@@ -583,6 +827,17 @@ public class EmbedWidgetDataManager: ObservableObject {
         initError = nil
         initState = .loading
 
+        if forceRefresh {
+            // Immediately reset analytics tracking for re-entry, so stale visibility/session state
+            // does not block EMBED_VIEW on fast return-and-scroll flows.
+            EmbedAnalyticsManager.shared.beginPageIfNeeded(
+                pageUrl: pageUrl,
+                folderInfos: [],
+                baseURL: baseURL,
+                forceNewSession: true
+            )
+        }
+
         let task = Task { @MainActor in
             do {
                 let pageID = EmbedAPI.extractPageIdFromPageUrl(pageUrl) ?? "nil"
@@ -596,6 +851,12 @@ public class EmbedWidgetDataManager: ObservableObject {
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize success. pageBundle.count=\(response.pageBundle.count)")
                 self.cache[pageUrl] = CacheEntry(
                     pageInfo: response.pageBundle
+                )
+                EmbedAnalyticsManager.shared.beginPageIfNeeded(
+                    pageUrl: pageUrl,
+                    folderInfos: response.pageBundle,
+                    baseURL: baseURL,
+                    forceNewSession: false
                 )
                 self.initState = .ready
             } catch {
@@ -767,6 +1028,7 @@ public class EmbedWidgetDataManager: ObservableObject {
 public struct EmbedWidgetView: View {
     private let position: EmbedPosition
     private let onError: ((EmbedWidgetLoadError) -> Void)?
+    @Environment(\.scenePhase) private var scenePhase
     
     @State private var folderInfos: [EmbedFolderInfo] = []
     @State private var currentPageUrl: String = ""
@@ -822,6 +1084,11 @@ public struct EmbedWidgetView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
+            }
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .inactive || newPhase == .background {
+                EmbedIOSSDK.notifyPageDidLeave()
             }
         }
     }
@@ -912,6 +1179,8 @@ public struct EmbedView: View {
     // 當 widget property position == fixed 時切換為 true，整個 WebView 會變成 fullscreen fixed
     @State private var isFullscreenFixed = false
     @State private var lightboxLoadFailed = false
+    @State private var hasTrackedVisibility = false
+    @State private var visibilityProbeTick = 0
 
     private var lightboxURL: URL {
         EmbedHTMLBuilder.lightBoxURL(pageUrl: pageUrl)
@@ -954,6 +1223,20 @@ public struct EmbedView: View {
                     }
                 }())
                 .background(Color.clear)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear {
+                                trackEmbedVisibilityIfNeeded(proxy: proxy)
+                            }
+                            .onChange(of: proxy.frame(in: .global)) { _ in
+                                trackEmbedVisibilityIfNeeded(proxy: proxy)
+                            }
+                            .onChange(of: visibilityProbeTick) { _ in
+                                trackEmbedVisibilityIfNeeded(proxy: proxy)
+                            }
+                    }
+                )
                 .ignoresSafeArea(edges: isFullscreenFixed ? .all : .init())
                 .interactiveDismissDisabledCompat(isFullscreenFixed)
                 .zIndex(isFullscreenFixed ? 1 : 0)
@@ -1000,6 +1283,19 @@ public struct EmbedView: View {
             .onAppear {
                 // 重置載入失敗狀態
                 lightboxLoadFailed = false
+            }
+        }
+        .onAppear {
+            // Returning to the same page should allow visibility tracking to run again.
+            hasTrackedVisibility = false
+            visibilityProbeTick = 0
+            Task { @MainActor in
+                // Retry visibility checks for a short period to handle fast return-and-scroll races.
+                for _ in 0..<20 {
+                    if hasTrackedVisibility { break }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    visibilityProbeTick += 1
+                }
             }
         }
     }
@@ -1170,6 +1466,39 @@ public struct EmbedView: View {
             return CGFloat(numericValue)
         default:
             return nil
+        }
+    }
+
+    private func trackEmbedVisibilityIfNeeded(proxy: GeometryProxy) {
+        if hasTrackedVisibility {
+            return
+        }
+
+        let frame = proxy.frame(in: .global)
+        if frame.width <= 0 || frame.height <= 0 {
+            return
+        }
+
+        let screenBounds = UIScreen.main.bounds
+        let intersection = frame.intersection(screenBounds)
+        if intersection.isNull || intersection.width <= 0 || intersection.height <= 0 {
+            return
+        }
+
+        let totalArea = frame.width * frame.height
+        guard totalArea > 0 else { return }
+
+        let visibleArea = intersection.width * intersection.height
+        let visibleRatio = visibleArea / totalArea
+
+        if visibleRatio >= 0.3 {
+            let didTrack = EmbedAnalyticsManager.shared.markWidgetVisible(
+                folderId: folderInfo.folderId,
+                baseURL: EmbedAPI.defaultBaseURL
+            )
+            if didTrack {
+                hasTrackedVisibility = true
+            }
         }
     }
 }
