@@ -680,6 +680,22 @@ public struct EmbedWidgetLoadError: Error {
     }
 }
 
+public struct EmbedWidgetClickEvent {
+    public let folderId: String
+    public let folderName: String?
+    public let position: String?
+    public let mediaId: String?
+    public let url: String?
+
+    public init(folderId: String, folderName: String?, position: String?, mediaId: String?, url: String?) {
+        self.folderId = folderId
+        self.folderName = folderName
+        self.position = position
+        self.mediaId = mediaId
+        self.url = url
+    }
+}
+
 // MARK: - EmbedWidgetDataManager (Shared Data Manager)
 @available(iOS 16.0, *)
 @MainActor
@@ -1028,6 +1044,7 @@ public class EmbedWidgetDataManager: ObservableObject {
 public struct EmbedWidgetView: View {
     private let position: EmbedPosition
     private let onError: ((EmbedWidgetLoadError) -> Void)?
+    private let onClick: ((EmbedWidgetClickEvent) -> Void)?
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var folderInfos: [EmbedFolderInfo] = []
@@ -1050,10 +1067,12 @@ public struct EmbedWidgetView: View {
      */
     public init(
         position: EmbedPosition,
-        onError: ((EmbedWidgetLoadError) -> Void)? = nil
+        onError: ((EmbedWidgetLoadError) -> Void)? = nil,
+        onClick: ((EmbedWidgetClickEvent) -> Void)? = nil
     ) {
         self.position = position
         self.onError = onError
+        self.onClick = onClick
     }
     
     public var body: some View {
@@ -1079,7 +1098,7 @@ public struct EmbedWidgetView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(folderInfos, id: \.folderId) { folderInfo in
-                        EmbedView(folderInfo: folderInfo, pageUrl: currentPageUrl)
+                        EmbedView(folderInfo: folderInfo, pageUrl: currentPageUrl, onClick: onClick)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1172,6 +1191,7 @@ public struct EmbedWidgetView: View {
 public struct EmbedView: View {
     private let folderInfo: EmbedFolderInfo
 	private let pageUrl: String
+    private let onClick: ((EmbedWidgetClickEvent) -> Void)?
 
     @State private var contentHeight: CGFloat = 0
     @State private var isLightboxPresented = false
@@ -1195,9 +1215,10 @@ public struct EmbedView: View {
      *
      * @returns {EmbedView} A new EmbedView instance.
      */
-    public init(folderInfo: EmbedFolderInfo, pageUrl: String) {
+    public init(folderInfo: EmbedFolderInfo, pageUrl: String, onClick: ((EmbedWidgetClickEvent) -> Void)? = nil) {
         self.folderInfo = folderInfo
         self.pageUrl = pageUrl
+        self.onClick = onClick
     }
 
     public var body: some View {
@@ -1311,6 +1332,34 @@ public struct EmbedView: View {
             guard let item = event.payload["data"] as? [String: Any] else {
                 return
             }
+
+            func extractString(_ value: Any?) -> String? {
+                if let string = value as? String, !string.isEmpty {
+                    return string
+                }
+                if let number = value as? NSNumber {
+                    return number.stringValue
+                }
+                return nil
+            }
+
+            let resolvedMediaId =
+                extractString(item["mediaId"]) ??
+                extractString(item["mediaID"]) ??
+                extractString(item["media_id"])
+
+            let clickEvent = EmbedWidgetClickEvent(
+                folderId: (item["folderId"] as? String) ?? folderInfo.folderId,
+                folderName: (item["folderName"] as? String) ?? folderInfo.folderName,
+                position: folderInfo.embedLocation ?? folderInfo.resolvedFloatingMediaPosition ?? folderInfo.layout,
+                mediaId: resolvedMediaId,
+                url: pageUrl
+            )
+            print(
+                "[EmbedWidgetClick] {folderId: \(clickEvent.folderId), folderName: \(clickEvent.folderName ?? "nil"), position: \(clickEvent.position ?? "nil"), mediaId: \(clickEvent.mediaId ?? "nil"), url: \(clickEvent.url ?? "nil")}"
+            )
+            onClick?(clickEvent)
+
             let disabled = (item["disabledLightBox"] as? Bool) ?? false
             if disabled {
                 return

@@ -71,6 +71,13 @@ struct ContentView: View {
                         onError: { _ in
                             // SDK error: notify App to hide this slot
                             showBelowBuyButtonWidget = false
+                        },
+                        onClick: { click in
+                            // click.folderId
+                            // click.folderName
+                            // click.position
+                            // click.mediaId (optional)
+                            // click.url (equals initialize(pageUrl: ...) value)
                         }
                     )
                 }
@@ -221,6 +228,7 @@ SDK supports `/api/widget/log` events aligned with web `91app.js` behavior:
 - `PAGE_VIEW`: sent once per page session, only when `/91app/pageBundle` returns non-empty `pageBundle`.
 - `EMBED_VIEW`: sent when widget becomes visible in viewport (with de-dup per page session).
 - `DWELL_TIME`: sent on page leave with both `dwellTime` and `widgetDwellTime`.
+- `WIDGET_CLICK` (App callback): delivered via `EmbedWidgetView(onClick:)` for app-side tracking.
 
 Leave-page trigger options:
 
@@ -232,6 +240,32 @@ Notes:
 - If `pageBundle` is empty, SDK skips `PAGE_VIEW` / `EMBED_VIEW` / `DWELL_TIME`.
 - `DWELL_TIME` is sent only when stay duration is greater than 5000 ms.
 - SDK prints outbound log payloads in console for verification during testing.
+
+### Widget Click Callback (`onClick`)
+
+`EmbedWidgetView` supports click callback so app can send its own analytics:
+
+```swift
+EmbedWidgetView(
+    position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+    onError: { _ in },
+    onClick: { click in
+        // click.folderId, click.folderName, click.position, click.mediaId, click.url
+    }
+)
+```
+
+Callback payload fields:
+
+- `folderId` (`String`): widget folder id.
+- `folderName` (`String?`): widget folder name.
+- `position` (`String?`): widget position (embed location/floating position).
+- `mediaId` (`String?`): media id from widget click payload. This field may be `nil` if widget does not provide it.
+- `url` (`String?`): always equals the page URL passed to `EmbedIOSSDK.initialize(pageUrl:...)`.
+
+Debug output:
+
+- SDK prints click payload summary with `[EmbedWidgetClick] ...` when user clicks widget content.
 
 ## Test Status (2026-05-26)
 
