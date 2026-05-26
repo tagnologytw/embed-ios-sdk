@@ -214,6 +214,34 @@ EmbedWidgetDataManager.shared.clearCache(for: pageUrl) // Clear specific page
 EmbedWidgetDataManager.shared.clearCache() // Clear all cache
 ```
 
+## Analytics Event Logging
+
+SDK supports `/api/widget/log` events aligned with web `91app.js` behavior:
+
+- `PAGE_VIEW`: sent once per page session, only when `/91app/pageBundle` returns non-empty `pageBundle`.
+- `EMBED_VIEW`: sent when widget becomes visible in viewport (with de-dup per page session).
+- `DWELL_TIME`: sent on page leave with both `dwellTime` and `widgetDwellTime`.
+
+Leave-page trigger options:
+
+- Primary: call `EmbedIOSSDK.notifyPageDidLeave()` when leaving the product page.
+- Fallback: SDK also triggers leave handling on `scenePhase` changes to `.inactive` / `.background`.
+
+Notes:
+
+- If `pageBundle` is empty, SDK skips `PAGE_VIEW` / `EMBED_VIEW` / `DWELL_TIME`.
+- `DWELL_TIME` is sent only when stay duration is greater than 5000 ms.
+- SDK prints outbound log payloads in console for verification during testing.
+
+## Test Status (2026-05-26)
+
+Verified with `ectest` integration flow:
+
+- ✅ Re-entering product page re-triggers `PAGE_VIEW` (new session with `forceRefresh: true`).
+- ✅ `EMBED_VIEW` re-triggers after returning to product page, including fast return-and-scroll scenarios.
+- ✅ `DWELL_TIME` includes both `dwellTime` and `widgetDwellTime`.
+- ✅ No analytics event is sent when `/91app/pageBundle` returns empty `pageBundle`.
+
 ## License
 
 MIT License - see LICENSE file for details
