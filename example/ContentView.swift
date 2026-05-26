@@ -27,6 +27,7 @@ struct ProductPageView: View {
     @State private var hasFixedCenterLeftContent: Bool = false
     @State private var showFixedCenterRightWidget: Bool = true
     @State private var hasFixedCenterRightContent: Bool = false
+    @State private var goToHomePage: Bool = false
 
     private let tagItems: [String] = [
         "電子票券", "NFT", "限定地區活動", "獨享", "點數兌換商品", "APP獨享活動", "限定商品", "定期購商品", "買就送"
@@ -244,8 +245,30 @@ struct ProductPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(edges: [.bottom, .leading, .trailing])
             .allowsHitTesting(true)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button("首頁") {
+                        EmbedIOSSDK.notifyPageDidLeave()
+                        goToHomePage = true
+                    }
+                    .font(.subheadline.bold())
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(Color.white.opacity(0.9))
+                    .clipShape(Capsule())
+                    .shadow(color: Color.black.opacity(0.12), radius: 6, y: 3)
+                }
+                .padding(.top, 12)
+                .padding(.horizontal, 16)
+                Spacer()
+            }
         }
         .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(isPresented: $goToHomePage) {
+            SimpleHomePageView()
+        }
         .onAppear {
             clearWebViewCache()
             Task {
@@ -272,6 +295,9 @@ struct ProductPageView: View {
                     checkAndHideWidgetIfNoContent(show: $showFixedCenterRightWidget, hasContent: hasFixedCenterRightContent)
                 }
             }
+        }
+        .onDisappear {
+            EmbedIOSSDK.notifyPageDidLeave()
         }
         }
     }
@@ -892,6 +918,27 @@ struct FooterSection: View {
 struct ContentView: View {
     var body: some View {
             ProductPageView()
+    }
+}
+
+struct SimpleHomePageView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "house.fill")
+                .font(.system(size: 42))
+                .foregroundColor(.blue)
+            Text("首頁")
+                .font(.title.bold())
+            Text("已從商品頁跳轉回首頁，可在 console 檢查 DWELL_TIME log。")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
+        .navigationTitle("首頁")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
