@@ -141,7 +141,7 @@ final class EmbedAnalyticsManager {
                 baseURL: baseURL
             )
         } else if folderIds.isEmpty {
-            print("[EmbedAnalytics] skip PAGE_VIEW because /91app/pageBundle returned empty pageBundle")
+            print("[EmbedAnalytics] skip PAGE_VIEW because /widget/pageBundle returned empty pageBundle")
         }
     }
 
@@ -454,7 +454,7 @@ public enum EmbedAPI {
 
     /**
      * @struct PageBundleResponse
-     * @description Response structure from /91app/pageBundle.
+     * @description Response structure from /widget/pageBundle.
      */
     public struct PageBundleResponse: Codable {
         public let message: String
@@ -468,7 +468,7 @@ public enum EmbedAPI {
 
     /**
      * @function fetchPageBundle
-     * @description Calls /91app/pageBundle with encrypted payload.
+     * @description Calls /widget/pageBundle with encrypted payload.
      */
     public static func fetchPageBundle(
         pageUrl: String,
@@ -487,7 +487,7 @@ public enum EmbedAPI {
             payloadSecret: payloadSecret
         )
 
-        guard let requestURL = URL(string: "\(baseURL)/91app/pageBundle") else {
+        guard let requestURL = URL(string: "\(baseURL)/widget/pageBundle") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: requestURL)

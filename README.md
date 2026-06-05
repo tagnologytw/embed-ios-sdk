@@ -105,7 +105,7 @@ struct ContentView: View {
 
 SDK 會呼叫：
 
-- `[POST] {BASE_URL}/91app/pageBundle`
+- `[POST] {BASE_URL}/widget/pageBundle`
 
 Request body 為 AES-256-GCM 加密後 payload：
 
@@ -225,7 +225,7 @@ EmbedWidgetDataManager.shared.clearCache() // Clear all cache
 
 SDK supports `/api/widget/log` events aligned with web `91app.js` behavior:
 
-- `PAGE_VIEW`: sent once per page session, only when `/91app/pageBundle` returns non-empty `pageBundle`.
+- `PAGE_VIEW`: sent once per page session, only when `/widget/pageBundle` returns non-empty `pageBundle`.
 - `EMBED_VIEW`: sent when widget becomes visible in viewport (with de-dup per page session).
 - `DWELL_TIME`: sent on page leave with both `dwellTime` and `widgetDwellTime`.
 - `WIDGET_CLICK` (App callback): delivered via `EmbedWidgetView(onClick:)` for app-side tracking.
@@ -274,7 +274,7 @@ Verified with `ectest` integration flow:
 - ✅ Re-entering product page re-triggers `PAGE_VIEW` (new session with `forceRefresh: true`).
 - ✅ `EMBED_VIEW` re-triggers after returning to product page, including fast return-and-scroll scenarios.
 - ✅ `DWELL_TIME` includes both `dwellTime` and `widgetDwellTime`.
-- ✅ No analytics event is sent when `/91app/pageBundle` returns empty `pageBundle`.
+- ✅ No analytics event is sent when `/widget/pageBundle` returns empty `pageBundle`.
 
 ## License
 
