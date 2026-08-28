@@ -183,7 +183,7 @@ struct ProductPageView: View {
 - **`initialize(pageUrl:mid:secret:baseURL:forceRefresh:)`** (required before widget render)
   - `pageUrl` (String, required): 當前頁面 URL
   - `mid` (String, required): 商店 MID
-  - `secret` (String, required): `payloadSecret`（Base64 且 decode 後必須是 32 bytes）
+  - `secret` (String, required): `payloadSecret`（Base64 且 decode 後必須是 32 bytes）。**各商店（mid）獨立一組**，由 Tagnology 於開通時逐店簽發，僅對該 mid 有效；單一金鑰外洩影響範圍僅限該商店，可單獨重新簽發
   - `baseURL` (String, optional): API 網域，預設 `https://embed.tagnology.co/api`
   - `forceRefresh` (Bool, optional): 是否忽略 in-memory cache 重新打 API（預設 `false`）
 - **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
@@ -220,6 +220,57 @@ To clear the cache manually:
 EmbedWidgetDataManager.shared.clearCache(for: pageUrl) // Clear specific page
 EmbedWidgetDataManager.shared.clearCache() // Clear all cache
 ```
+
+## WebView 設定
+
+SDK 的所有 widget 均渲染於 SDK **內部自行建立**的 `WKWebView`。`WKWebViewConfiguration` 為 per-instance 設定，因此：
+
+- Host App 對自家 WebView 的任何政策調整（關閉 JS 開窗、收緊媒體自動播放等）**不會影響** widget 的 WebView；
+- SDK 的設定也**不會外溢**影響 Host App 內的其他 WebView。
+
+整合時**不需要、也無法**調整下列任何設定。
+
+### WKWebViewConfiguration
+
+| 設定 | 值 | 說明 |
+|---|---|---|
+| `defaultWebpagePreferences.allowsContentJavaScript` | `true` | widget 本體為 JavaScript，必要設定（iOS 14+ API，取代已棄用的 `javaScriptEnabled`） |
+| `allowsInlineMediaPlayback` | `true` | FloatingMedia 影音自動播放所必需 |
+| `mediaTypesRequiringUserActionForPlayback` | `[]`（空集合） | 允許影音不經使用者手勢即自動播放，FloatingMedia 所必需 |
+| `websiteDataStore` | 系統預設 | Cookie 存於 App 的預設 `WKWebsiteDataStore`。widget 功能不依賴 Host 站台的 cookie |
+| `customUserAgent` | 未設定 | 使用系統預設 User-Agent，後端不依賴特定 UA |
+
+SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），也未實作 `WKUIDelegate`，因此 widget 的 WebView 無法開啟任何新視窗——widget 不使用 `window.open`，所有導頁行為都經 JS bridge 交由 Host App 處理（見下方）。
+
+另外，widget 的 WebView 會設定 `scrollView.isScrollEnabled = false`（高度由內容自動回報，不需內部捲動）、`isOpaque = false` 與透明背景（與 Host 頁面融合）。
+
+### JavaScript Bridge
+
+對應 Android 的 `addJavascriptInterface`，iOS 端註冊兩個 `WKScriptMessageHandler`：
+
+| Handler | 方向 | 用途 |
+|---|---|---|
+| `tagnologyResize` | JS → Native | widget 內容高度變化時回報，原生端據此調整版位高度 |
+| `tagnologyEvent` | JS → Native | 傳遞 widget 事件（點擊等）。點擊事件經 `EmbedWidgetView(onClick:)` callback 交由 Host App 決定導頁方式 |
+
+Bridge 僅接收 SDK 自家 widget 頁面（載入自 `https://embed.tagnology.co`）發出的訊息，Host App 無需（也不應）另行註冊或呼叫。
+
+### Lightbox
+
+點擊 widget 內容時，SDK 以原生 `fullScreenCover` 開啟 Lightbox（另一個 SDK 內部的 `WKWebView`，載入 `https://embed.tagnology.co/lightBox`），**不使用** `window.open` 或系統瀏覽器。Lightbox 的 WebView 設定與上表相同（同樣允許 JS 與影音自動播放），關閉後即釋放。
+
+### Mixed Content
+
+widget HTML 與所有資源（JS / CSS / 影音）均由 `https://embed.tagnology.co` 以 HTTPS 載入，不存在 mixed content；SDK 亦未放寬 WKWebView 預設的 mixed content 封鎖政策。
+
+### Cookie / User-Agent 政策
+
+- SDK 不讀取、不依賴 Host 站台或 Host App 的任何 cookie；widget 所需資料均經 `/widget/pageBundle` API 以加密 payload 取得。
+- 未設定 `customUserAgent`，一律使用系統預設 UA。
+
+### Host App 需要注意的唯一事項
+
+**ATS（App Transport Security）**：請確保 App 未封鎖對 `embed.tagnology.co` 的 HTTPS 連線。預設 ATS 設定即允許所有 HTTPS 連線，一般無需任何調整。
 
 ## Analytics Event Logging
 
