@@ -381,12 +381,12 @@ public enum EmbedAPI {
     /**
      * @function extractPageIdFromPageUrl
      * @description Extracts page ID from page URL using 91APP rules:
-     *              - /SalePage/Index/{id}
-     *              - /SalePageCategory/{id}
+     *              - /SalePage/Index/{id}        -> "{id}"
+     *              - /SalePageCategory/{id}      -> "category_{id}"
      *
      * @param {String} pageUrl - The page URL to extract product ID from.
      *
-     * @returns {String?} The extracted product ID, or nil if not found.
+     * @returns {String?} The extracted page ID, or nil if not found.
      */
     public static func extractPageIdFromPageUrl(_ pageUrl: String) -> String? {
         guard let url = URL(string: pageUrl) else {
@@ -403,7 +403,9 @@ public enum EmbedAPI {
 
         if let categoryPosition = lowercasedComponents.firstIndex(of: "salepagecategory"),
            categoryPosition + 1 < pathComponents.count {
-            return pathComponents[categoryPosition + 1]
+            // Category pages must carry the "category_" prefix to match the web
+            // side's getPageInfo lookup key; a bare id returns an empty pageBundle.
+            return "category_" + pathComponents[categoryPosition + 1]
         }
 
         return nil

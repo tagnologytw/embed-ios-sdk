@@ -121,7 +121,7 @@ const requestBody = encryptPayload({
 `PAGE_ID` 由 `PAGE_URL` 解析：
 
 - `https://partnertest4.91app.com/SalePage/Index/9323753` -> `9323753`
-- `https://partnertest4.91app.com/v2/official/SalePageCategory/481477?sortMode=Newest` -> `481477`
+- `https://partnertest4.91app.com/v2/official/SalePageCategory/481477?sortMode=Newest` -> `category_481477`
 
 ### Position Enum
 
