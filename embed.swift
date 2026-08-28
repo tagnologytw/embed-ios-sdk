@@ -1585,7 +1585,6 @@ struct EmbedWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         // iOS 16+ 使用新的 API 替代已棄用的 javaScriptEnabled (iOS 14.0+)
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.allowsInlineMediaPlayback = true
@@ -1765,10 +1764,21 @@ struct LightboxWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            EmbedLogger.log("[LightboxWebView] didFinish url=\(webView.url?.absoluteString ?? "nil")")
             isContentLoaded = true
             flushPendingMessage()
+            // Debug probe: report page DOM state shortly after load to diagnose blank lightbox
+            if EmbedLogger.isEnabled {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak webView] in
+                    webView?.evaluateJavaScript(
+                        "document.body ? (document.readyState + ' children=' + document.body.childElementCount + ' htmlLen=' + document.body.innerHTML.length) : 'no-body'"
+                    ) { result, error in
+                        EmbedLogger.log("[LightboxWebView] probe result=\(String(describing: result)) error=\(String(describing: error))")
+                    }
+                }
+            }
         }
-        
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             EmbedLogger.log("[LightboxWebView] Navigation failed: \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in
@@ -1786,13 +1796,21 @@ struct LightboxWebView: UIViewRepresentable {
         func flushPendingMessage() {
             guard isContentLoaded,
                   let jsonString = pendingMessageJSON,
-                  let webView else { return }
+                  let webView else {
+                EmbedLogger.log("[LightboxWebView] flush skipped. loaded=\(isContentLoaded) hasPending=\(pendingMessageJSON != nil)")
+                return
+            }
 
+            EmbedLogger.log("[LightboxWebView] flushing message len=\(jsonString.count)")
             // Dispatch MessageEvent into the lightbox page
             let script = """
             window.dispatchEvent(new MessageEvent('message', { data: \(jsonString), origin: '\(EmbedHTMLBuilder.origin)' }));
             """
-            webView.evaluateJavaScript(script, completionHandler: nil)
+            webView.evaluateJavaScript(script) { _, error in
+                if let error {
+                    EmbedLogger.log("[LightboxWebView] flush dispatch error=\(error.localizedDescription)")
+                }
+            }
             pendingMessageJSON = nil
         }
 
