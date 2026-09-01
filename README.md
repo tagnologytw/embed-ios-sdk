@@ -20,6 +20,28 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Installation
 
+### Swift Package Manager (Recommended)
+
+In Xcode, go to **File > Add Package Dependencies...** and enter:
+
+```
+https://github.com/tagnologytw/embed-ios-sdk.git
+```
+
+Or add it to your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.8")
+]
+```
+
+Then import the module where needed:
+
+```swift
+import EmbedIOSSDK
+```
+
 ### CocoaPods
 
 Add the following to your `Podfile`:
@@ -36,7 +58,7 @@ pod install
 
 ### Manual Installation
 
-1. Copy the `embed.swift` file to your project
+1. Copy the `Sources/EmbedIOSSDK/embed.swift` file to your project
 2. Ensure your project targets iOS 16.0 or higher
 
 ## Usage

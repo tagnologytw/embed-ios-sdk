@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
 	spec.name         = "EmbedIOSSDK"
-	spec.version      = "1.0.7"
+	spec.version      = "1.0.8"
 	spec.summary      = "Tagnology Embed SDK for iOS - Embed web content into iOS apps with SwiftUI support"
 	spec.description  = <<-DESC
 	  EmbedIOSSDK is a powerful iOS SDK developed by Tagnology that allows you to embed 
@@ -22,7 +22,7 @@ Pod::Spec.new do |spec|
 	
 	spec.source       = { :git => "https://github.com/tagnologytw/embed-ios-sdk.git", :tag => "#{spec.version}" }
 	
-	spec.source_files = "embed.swift"
+	spec.source_files = "Sources/EmbedIOSSDK/**/*.swift"
 	
 	spec.frameworks   = "SwiftUI", "WebKit", "UIKit"
 	spec.requires_arc = true
