@@ -1,0 +1,58 @@
+name: iOS SDK CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-sdk-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests, build, and SPM
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Swift package
+        run: swift package dump-package
+
+      - name: Run iOS tests
+        run: >-
+          xcodebuild test
+          -scheme EmbedIOSSDK
+          -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest'
+          -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKTests"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Build for iOS devices
+        run: >-
+          xcodebuild build
+          -scheme EmbedIOSSDK
+          -destination 'generic/platform=iOS'
+          -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKDeviceBuild"
+          CODE_SIGNING_ALLOWED=NO
+
+  cocoapods:
+    name: CocoaPods lint
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install CocoaPods when unavailable
+        run: command -v pod >/dev/null || brew install cocoapods
+
+      - name: Validate podspec
+        run: pod lib lint EmbedIOSSDK.podspec --allow-warnings
