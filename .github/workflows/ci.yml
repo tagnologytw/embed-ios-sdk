@@ -21,12 +21,22 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate Swift package
         run: swift package dump-package
 
-      - name: Run iOS tests
+      - name: Run tests with Mac Catalyst
+        if: github.event_name == 'pull_request'
+        run: >-
+          xcodebuild test
+          -scheme EmbedIOSSDK
+          -destination 'platform=macOS,variant=Mac Catalyst'
+          -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKCatalystTests"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Run iOS integration tests
+        if: github.event_name == 'push'
         run: >-
           xcodebuild test
           -scheme EmbedIOSSDK
@@ -49,7 +59,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install CocoaPods when unavailable
         run: command -v pod >/dev/null || brew install cocoapods
