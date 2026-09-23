@@ -4,7 +4,7 @@ import WebKit
 
 struct ProductPageView: View {
     // 當前頁面的 URL
-    @State private var pageUrl: String = "https://partnertest3.91app.com/SalePage/Index/8555569"
+    @State private var pageUrl: String = "https://partnertest4.91app.com/SalePage/Index/8778040"
     @State private var mid: String = "41458"
     @State private var secretKey: String = "P5Sayl2krqbPV8ORsekcSDoWFUEiurKW2WMbm62b5Cs="
     @State private var isEmbedInitialized: Bool = false
@@ -72,6 +72,7 @@ struct ProductPageView: View {
                             if isEmbedInitialized && showBelowBuyButtonWidget {
                                 EmbedWidgetView(
                                     position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+                                    pageUrl: pageUrl,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowBuyButtonWidget, slotName: "BELOW_BUY_BUTTON")
                                     }
@@ -91,6 +92,7 @@ struct ProductPageView: View {
                             if isEmbedInitialized && showBelowMainProductInfoWidget {
                                 EmbedWidgetView(
                                     position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO,
+                                    pageUrl: pageUrl,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showBelowMainProductInfoWidget, slotName: "BELOW_MAIN_PRODUCT_INFO")
                                     }
@@ -103,6 +105,7 @@ struct ProductPageView: View {
                             if isEmbedInitialized && showAboveRecommendationWidget {
                                 EmbedWidgetView(
                                     position: EmbedIOSSDK.ABOVE_RECOMMENDATION,
+                                    pageUrl: pageUrl,
                                     onError: { error in
                                         handleWidgetSDKCallback(error: error, show: $showAboveRecommendationWidget, slotName: "ABOVE_RECOMMENDATION")
                                     }
@@ -133,6 +136,7 @@ struct ProductPageView: View {
                         HStack {
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedBottomLeftContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedBottomLeftWidget, slotName: "FIXED_BOTTOM_LEFT")
@@ -153,6 +157,7 @@ struct ProductPageView: View {
                             Spacer()
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_BOTTOM_RIGHT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedBottomRightContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedBottomRightWidget, slotName: "FIXED_BOTTOM_RIGHT")
@@ -170,6 +175,7 @@ struct ProductPageView: View {
                         HStack {
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_TOP_LEFT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedTopLeftContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedTopLeftWidget, slotName: "FIXED_TOP_LEFT")
@@ -191,6 +197,7 @@ struct ProductPageView: View {
                             Spacer()
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_TOP_RIGHT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedTopRightContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedTopRightWidget, slotName: "FIXED_TOP_RIGHT")
@@ -211,6 +218,7 @@ struct ProductPageView: View {
                         HStack {
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_CENTER_LEFT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedCenterLeftContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedCenterLeftWidget, slotName: "FIXED_CENTER_LEFT")
@@ -231,6 +239,7 @@ struct ProductPageView: View {
                             Spacer()
                             FixedFloatingMediaWidgetView(
                                 position: EmbedIOSSDK.FIXED_CENTER_RIGHT,
+                                pageUrl: pageUrl,
                                 hasContent: $hasFixedCenterRightContent,
                                 onError: { error in
                                     handleWidgetSDKCallback(error: error, show: $showFixedCenterRightWidget, slotName: "FIXED_CENTER_RIGHT")
@@ -243,7 +252,7 @@ struct ProductPageView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(edges: [.bottom, .leading, .trailing])
+            .ignoresSafeArea(edges: [.leading, .trailing])
             .allowsHitTesting(true)
 
             VStack {
@@ -949,16 +958,19 @@ struct SimpleHomePageView: View {
  */
 struct FixedFloatingMediaWidgetView: View {
     let position: EmbedIOSSDK.Position
+    let pageUrl: String
     @Binding var hasContent: Bool
     let onError: (EmbedWidgetLoadError) -> Void
     
     @State private var widgetHasRendered: Bool = false
     
-    private let widgetSize = CGSize(width: 126, height: 224)
+    private let widgetWidth: CGFloat = 126
     
     var body: some View {
-        EmbedWidgetView(position: position, onError: onError)
-            .frame(width: widgetSize.width, height: widgetSize.height)
+        EmbedWidgetView(position: position, pageUrl: pageUrl, onError: onError)
+            // Keep the width fixed but let the SDK expand vertically when the
+            // same FIXED_* position contains more than one FloatingMedia widget.
+            .frame(width: widgetWidth)
             .background(
                 GeometryReader { geometry in
                     Color.clear
