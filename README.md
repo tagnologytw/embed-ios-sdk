@@ -66,7 +66,7 @@ pod install
 ### Basic Usage
 
 進入頁面後，先呼叫 `EmbedIOSSDK.initialize(pageUrl:mid:secret:)`。  
-初始化成功後，再用 `EmbedWidgetView(position:)` 顯示各版位。
+初始化成功後，再用 `EmbedWidgetView(position:pageUrl:)` 顯示各版位。傳入 `pageUrl` 後，頁面網址改變時 View 會清除舊內容並重新取得對應版位。
 
 ```swift
 import SwiftUI
@@ -90,6 +90,7 @@ struct ContentView: View {
                 if isEmbedInitialized && showBelowBuyButtonWidget {
                     EmbedWidgetView(
                         position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+                        pageUrl: pageUrl,
                         onError: { _ in
                             // SDK error: notify App to hide this slot
                             showBelowBuyButtonWidget = false
@@ -106,11 +107,15 @@ struct ContentView: View {
 
                 // Display widget below main product info
                 if isEmbedInitialized {
-                    EmbedWidgetView(position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO)
+                    EmbedWidgetView(
+                        position: EmbedIOSSDK.BELOW_MAIN_PRODUCT_INFO,
+                        pageUrl: pageUrl
+                    )
                 }
             }
         }
-        .task {
+        .task(id: pageUrl) {
+            isEmbedInitialized = false
             let initError = await EmbedIOSSDK.initialize(
                 pageUrl: pageUrl,
                 mid: mid,
@@ -173,6 +178,7 @@ For fixed position widgets (FloatingMedia), you can overlay them on your content
 
 ```swift
 struct ProductPageView: View {
+    let pageUrl: String
     @State private var isEmbedInitialized: Bool = true
     @State private var showFixedWidget: Bool = true
 
@@ -188,7 +194,10 @@ struct ProductPageView: View {
                 VStack {
                     Spacer()
                     HStack {
-                        EmbedWidgetView(position: EmbedIOSSDK.FIXED_BOTTOM_LEFT)
+                        EmbedWidgetView(
+                            position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
+                            pageUrl: pageUrl
+                        )
                         Spacer()
                     }
                     .padding(.leading, 20)
@@ -209,6 +218,7 @@ struct ProductPageView: View {
   - `baseURL` (String, optional): API 網域，預設 `https://embed.tagnology.co/api`
   - `forceRefresh` (Bool, optional): 是否忽略 in-memory cache 重新打 API（預設 `false`）
 - **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
+- **`pageUrl`** (String, optional): The page this view should display. Passing it is recommended; changing it reloads the view and prevents content from the previously initialized page from being rendered. Omitting it preserves the legacy shared-current-page behavior.
 - **`onError`** ((EmbedWidgetLoadError) -> Void, optional): Called for non-`200` status codes. Use this callback to hide the slot in your App.
 
 ### Error Callback (Hide Slot)
@@ -219,6 +229,7 @@ When callback status code is non-`200` (no data or error), `onError` will be tri
 - `statusCode`: callback status code
     - `200` 正常（不會 callback）
     - `204` 無資料（API 回傳 `pageBundle = []` 或該版位過濾後無資料）
+    - `409` `EmbedWidgetView` 要求的 `pageUrl` 與 SDK 目前初始化頁面不一致
     - `422` 初始化參數錯誤（例如 pageUrl 無法取出 ID、secret 格式錯誤）
     - `425` 初始化進行中
     - `428` 尚未初始化（尚未呼叫 `initialize`）
@@ -226,15 +237,36 @@ When callback status code is non-`200` (no data or error), `onError` will be tri
     - `408` timeout
     - `520` 其他錯誤
 - `message`: error message
-- `pageUrl`: current page URL
+- `pageUrl`: requested page URL（未傳入 `EmbedWidgetView` 時則為目前初始化頁面）
 - `position`: current widget position
 
-**Behavior:** `204/422/500/408/520` 建議隱藏版位；`425/428` 建議等待或先完成初始化後再渲染。
+**Behavior:** `204/422/500/408/520` 建議隱藏版位；`409/425/428` 會先等待初始化完成，若重試後仍失敗才透過 `onError` 回傳。
 
 ### Advanced Usage
 
 The SDK uses a shared data manager to cache initialization data and avoid multiple API calls for the same page URL.  
-After a successful `initialize`, all `EmbedWidgetView(position:)` share the same in-memory page bundle.
+After a successful `initialize`, all `EmbedWidgetView(position:pageUrl:)` read from the shared in-memory page bundle. Pass the same `pageUrl` to both APIs so the view can reject stale data.
+
+When the host app changes pages, make the initialization task depend on `pageUrl`:
+
+```swift
+.task(id: pageUrl) {
+    await EmbedIOSSDK.initialize(
+        pageUrl: pageUrl,
+        mid: mid,
+        secret: secret
+    )
+}
+```
+
+The matching widget view does not need an additional `.id(pageUrl)` workaround:
+
+```swift
+EmbedWidgetView(
+    position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+    pageUrl: pageUrl
+)
+```
 
 To clear the cache manually:
 
@@ -321,6 +353,7 @@ Notes:
 ```swift
 EmbedWidgetView(
     position: EmbedIOSSDK.BELOW_BUY_BUTTON,
+    pageUrl: pageUrl,
     onError: { _ in },
     onClick: { click in
         // click.folderId, click.folderName, click.position, click.mediaId, click.url

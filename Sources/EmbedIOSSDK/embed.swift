@@ -311,7 +311,7 @@ public enum EmbedIOSSDK {
     /**
      * @function initialize
      * @description Initializes embed data for the current page. This must be called once
-     *              before rendering EmbedWidgetView(position:).
+     *              before rendering EmbedWidgetView(position:pageUrl:).
      *
      * @param {String} pageUrl - Current page URL.
      * @param {String} mid - Merchant ID.
@@ -652,6 +652,7 @@ public struct EmbedWidgetLoadError: Error {
     public enum StatusCode: Int {
         case ok = 200
         case noData = 204
+        case pageMismatch = 409
         case invalidInitPayload = 422
         case initializing = 425
         case notInitialized = 428
@@ -890,15 +891,31 @@ public class EmbedWidgetDataManager: ObservableObject {
         return initError
     }
 
-    func getWidgetsForPositionResult(position: EmbedPosition) async -> WidgetLoadResult {
+    func getWidgetsForPositionResult(
+        position: EmbedPosition,
+        expectedPageUrl: String? = nil
+    ) async -> WidgetLoadResult {
         guard let context = currentContext else {
             return WidgetLoadResult(
                 widgets: [],
-                pageUrl: "",
+                pageUrl: expectedPageUrl ?? "",
                 error: EmbedWidgetLoadError(
                     statusCode: .notInitialized,
                     message: "SDK not initialized. Please call EmbedIOSSDK.initialize(pageUrl:mid:secret:) first.",
-                    pageUrl: "",
+                    pageUrl: expectedPageUrl ?? "",
+                    position: position
+                )
+            )
+        }
+
+        if let expectedPageUrl, context.pageUrl != expectedPageUrl {
+            return WidgetLoadResult(
+                widgets: [],
+                pageUrl: expectedPageUrl,
+                error: EmbedWidgetLoadError(
+                    statusCode: .pageMismatch,
+                    message: "Page mismatch: EmbedWidgetView requested \(expectedPageUrl), but SDK initialized \(context.pageUrl). Please initialize the SDK for the requested page.",
+                    pageUrl: expectedPageUrl,
                     position: position
                 )
             )
@@ -1045,6 +1062,7 @@ public class EmbedWidgetDataManager: ObservableObject {
 @available(iOS 16.0, *)
 public struct EmbedWidgetView: View {
     private let position: EmbedPosition
+    private let pageUrl: String?
     private let onError: ((EmbedWidgetLoadError) -> Void)?
     private let onClick: ((EmbedWidgetClickEvent) -> Void)?
     @Environment(\.scenePhase) private var scenePhase
@@ -1053,51 +1071,50 @@ public struct EmbedWidgetView: View {
     @State private var currentPageUrl: String = ""
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
-    @State private var hasStartedLoading: Bool = false
     @State private var initRetryCount: Int = 0
+    @State private var activeLoadIdentity: LoadIdentity?
     private let maxInitRetryCount: Int = 20
+
+    private struct LoadIdentity: Equatable {
+        let pageUrl: String?
+        let position: String
+    }
+
+    private var loadIdentity: LoadIdentity {
+        LoadIdentity(pageUrl: pageUrl, position: position.rawValue)
+    }
     
     /**
      * @function init
-     * @description Initializes EmbedWidgetView with position only.
+     * @description Initializes EmbedWidgetView for a position and optional page URL.
      *              Data must already be initialized via EmbedIOSSDK.initialize(pageUrl:mid:secret:).
      *
      * @param {EmbedPosition} position - The position where the widget should be displayed.
+     * @param {String?} pageUrl - The page this view should display. When supplied, changing it reloads the view and validates the initialized page.
      * @param {(EmbedWidgetLoadError) -> Void?} onError - Optional callback when SDK load fails and widget cannot render.
      *
      * @returns {EmbedWidgetView} A new EmbedWidgetView instance.
      */
     public init(
         position: EmbedPosition,
+        pageUrl: String? = nil,
         onError: ((EmbedWidgetLoadError) -> Void)? = nil,
         onClick: ((EmbedWidgetClickEvent) -> Void)? = nil
     ) {
         self.position = position
+        self.pageUrl = pageUrl
         self.onError = onError
         self.onClick = onClick
     }
     
     public var body: some View {
-        if !hasStartedLoading {
-            DispatchQueue.main.async {
-                if !self.hasStartedLoading {
-                    self.hasStartedLoading = true
-                    EmbedLogger.log("[EmbedWidgetView] body - first render load for position: \(self.position.rawValue)")
-                    Task {
-                        await self.loadWidgets()
-                    }
-                }
-            }
-        }
+        ZStack(alignment: .topLeading) {
+            // Keep a concrete view mounted so `.task(id:)` always runs, even
+            // before widget data is available.
+            Color.clear
+                .frame(height: 0)
 
-        return Group {
-            if isLoading {
-                EmptyView()
-            } else if errorMessage != nil {
-                EmptyView()
-            } else if folderInfos.isEmpty {
-                EmptyView()
-            } else {
+            if !isLoading && errorMessage == nil && !folderInfos.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(folderInfos, id: \.folderId) { folderInfo in
                         EmbedView(folderInfo: folderInfo, pageUrl: currentPageUrl, onClick: onClick)
@@ -1107,11 +1124,36 @@ public struct EmbedWidgetView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: loadIdentity) {
+            await reloadWidgets()
+        }
         .onChange(of: scenePhase) { newPhase in
             if newPhase == .inactive || newPhase == .background {
                 EmbedIOSSDK.notifyPageDidLeave()
             }
         }
+    }
+
+    /**
+     * @function reloadWidgets
+     * @description Clears state from the previous page before loading the requested page and position.
+     */
+    private func reloadWidgets() async {
+        guard !Task.isCancelled else { return }
+        let identity = loadIdentity
+
+        await MainActor.run {
+            self.activeLoadIdentity = identity
+            self.folderInfos = []
+            self.currentPageUrl = self.pageUrl ?? ""
+            self.isLoading = false
+            self.errorMessage = nil
+            self.initRetryCount = 0
+        }
+
+        guard !Task.isCancelled else { return }
+        await loadWidgets(expectedPageUrl: pageUrl, identity: identity)
     }
     
     /**
@@ -1119,17 +1161,18 @@ public struct EmbedWidgetView: View {
      * @description Loads widgets from the shared data manager based on the specified position.
      *              Uses cached data if available to avoid multiple API calls.
      */
-    private func loadWidgets() async {
-        EmbedLogger.log("[EmbedWidgetView] loadWidgets called - position: \(position.rawValue)")
+    private func loadWidgets(expectedPageUrl: String?, identity: LoadIdentity) async {
+        guard !Task.isCancelled else { return }
+        EmbedLogger.log("[EmbedWidgetView] loadWidgets called - position: \(position.rawValue), pageUrl: \(expectedPageUrl ?? "legacy")")
         
         // 使用 MainActor 確保狀態檢查和設置是原子操作
         let shouldLoad = await MainActor.run {
-            if self.isLoading {
-                EmbedLogger.log("[EmbedWidgetView] Already loading, skipping...")
+            guard self.activeLoadIdentity == identity else {
+                EmbedLogger.log("[EmbedWidgetView] Stale load identity, skipping...")
                 return false
             }
-            if self.hasStartedLoading && !self.folderInfos.isEmpty {
-                EmbedLogger.log("[EmbedWidgetView] Already loaded with \(self.folderInfos.count) widgets, skipping...")
+            if self.isLoading {
+                EmbedLogger.log("[EmbedWidgetView] Already loading, skipping...")
                 return false
             }
             EmbedLogger.log("[EmbedWidgetView] Setting loading state to true")
@@ -1143,30 +1186,45 @@ public struct EmbedWidgetView: View {
             return
         }
 
-        let result = await EmbedWidgetDataManager.shared.getWidgetsForPositionResult(position: position)
+        let result = await EmbedWidgetDataManager.shared.getWidgetsForPositionResult(
+            position: position,
+            expectedPageUrl: expectedPageUrl
+        )
+        guard !Task.isCancelled else { return }
         let widgets = result.widgets
         EmbedLogger.log("[EmbedWidgetView] Received \(widgets.count) widgets from data manager")
 
         if let loadError = result.error {
             let isInitStateError =
                 loadError.statusCode == EmbedWidgetLoadError.StatusCode.initializing.rawValue ||
-                loadError.statusCode == EmbedWidgetLoadError.StatusCode.notInitialized.rawValue
+                loadError.statusCode == EmbedWidgetLoadError.StatusCode.notInitialized.rawValue ||
+                loadError.statusCode == EmbedWidgetLoadError.StatusCode.pageMismatch.rawValue
 
             if isInitStateError && initRetryCount < maxInitRetryCount {
-                await MainActor.run {
+                let shouldRetry = await MainActor.run {
+                    guard self.activeLoadIdentity == identity else { return false }
                     self.isLoading = false
                     self.errorMessage = nil
                     self.currentPageUrl = result.pageUrl
                     self.initRetryCount += 1
+                    return true
                 }
+                guard shouldRetry else { return }
 
                 // Wait for initialization to complete, then retry.
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                await loadWidgets()
+                do {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await loadWidgets(expectedPageUrl: expectedPageUrl, identity: identity)
                 return
             }
 
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard self.activeLoadIdentity == identity else { return }
                 EmbedLogger.log("[EmbedWidgetView] ERROR: statusCode=\(loadError.statusCode), message: \(loadError.message)")
                 self.errorMessage = loadError.message
                 self.folderInfos = []
@@ -1179,7 +1237,9 @@ public struct EmbedWidgetView: View {
         
         EmbedLogger.log("[EmbedWidgetView] Widgets for position \(position.rawValue): \(widgets.count)")
         
+        guard !Task.isCancelled else { return }
         await MainActor.run {
+            guard self.activeLoadIdentity == identity else { return }
             self.folderInfos = widgets
             self.currentPageUrl = result.pageUrl
             self.isLoading = false
