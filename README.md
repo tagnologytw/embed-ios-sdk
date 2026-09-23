@@ -18,6 +18,27 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - Swift 5.0+
 - Xcode 14.0+
 
+## Release Notes
+
+### 1.0.11
+
+- Widget 與 Lightbox 改用 SDK 私有、共用的 `WKWebsiteDataStore.nonPersistent()`，不再與 Host App 共用預設 cookie jar。
+- SDK WebView 的 cookie 與其他網站資料只保留於記憶體，不會寫入磁碟或跨 App 啟動保存；Host App 清除預設 store 也不會影響 SDK store。
+- 集中管理 Widget 與 Lightbox 的 WebView 設定，確保 JavaScript 與影音播放政策一致。
+
+### 1.0.10
+
+- 同一固定位置若有多個 FloatingMedia widget，會全部依時間順序垂直顯示，間距為 8pt。
+- 固定浮窗改用內容總高度，不再強制單一 224pt 高度。
+- 底部固定浮窗會避開 Safe Area，避免被 Host App 的底部 action bar 或系統區域遮擋。
+
+### 1.0.9
+
+- `EmbedWidgetView` 新增選填的 `pageUrl`；網址改變時會自動清除舊狀態並重新載入，不需額外使用 `.id(pageUrl)`。
+- 若 View 要求的 `pageUrl` 與 SDK 已初始化頁面不同，會透過 `onError` 回傳 `409 pageMismatch`，不再靜默顯示前一頁內容。
+- 初始化加入競態保護；較舊頁面的延遲成功或失敗結果不會覆蓋目前頁面。
+- 新增公開的 `EmbedIOSSDK.setLoggingEnabled(_:)`，並移除 Lightbox 載入後延遲執行的 DOM 探查程式。
+
 ## Installation
 
 ### Swift Package Manager (Recommended)
@@ -32,7 +53,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.8")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.11")
 ]
 ```
 
@@ -47,7 +68,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.0'
+pod 'EmbedIOSSDK', '~> 1.0.11'
 ```
 
 Then run:
