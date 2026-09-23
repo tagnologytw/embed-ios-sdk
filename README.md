@@ -122,6 +122,7 @@ struct ContentView: View {
                 secret: secret,
                 forceRefresh: true // optional, avoid stale in-memory cache during debug
             )
+            guard !Task.isCancelled else { return }
             isEmbedInitialized = (initError == nil)
         }
     }
@@ -258,6 +259,8 @@ When the host app changes pages, make the initialization task depend on `pageUrl
     )
 }
 ```
+
+If the page changes again before initialization completes, the newer request supersedes the older request. The SDK cancels the previous request when possible and always ignores stale results, so an older page cannot overwrite the current page cache or initialization state. Check `Task.isCancelled` before updating host App state after `initialize` returns.
 
 The matching widget view does not need an additional `.id(pageUrl)` workaround:
 
