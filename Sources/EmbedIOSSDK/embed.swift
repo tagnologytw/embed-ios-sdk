@@ -21,8 +21,9 @@ enum EmbedBridge {
 }
 
 enum EmbedLogger {
-    // Turn on only when debugging.
-    static let isEnabled = false
+    // Disabled by default. Consumers can opt in through
+    // EmbedIOSSDK.setLoggingEnabled(_:).
+    static var isEnabled = false
 
     static func log(_ message: @autoclosure () -> String) {
         guard isEnabled else { return }
@@ -307,6 +308,17 @@ public enum EmbedIOSSDK {
 	public static let FIXED_TOP_RIGHT = EmbedPosition.FIXED_TOP_RIGHT
 	public static let FIXED_CENTER_LEFT = EmbedPosition.FIXED_CENTER_LEFT
 	public static let FIXED_CENTER_RIGHT = EmbedPosition.FIXED_CENTER_RIGHT
+
+    /**
+     * @function setLoggingEnabled
+     * @description Enables or disables internal SDK diagnostic logging.
+     *              Logging is disabled by default and should normally only be enabled in debug builds.
+     *
+     * @param {Bool} isEnabled - true to print SDK diagnostic logs; false to silence them.
+     */
+    public static func setLoggingEnabled(_ isEnabled: Bool) {
+        EmbedLogger.isEnabled = isEnabled
+    }
 
     /**
      * @function initialize
@@ -1897,16 +1909,6 @@ struct LightboxWebView: UIViewRepresentable {
             EmbedLogger.log("[LightboxWebView] didFinish url=\(webView.url?.absoluteString ?? "nil")")
             isContentLoaded = true
             flushPendingMessage()
-            // Debug probe: report page DOM state shortly after load to diagnose blank lightbox
-            if EmbedLogger.isEnabled {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak webView] in
-                    webView?.evaluateJavaScript(
-                        "document.body ? (document.readyState + ' children=' + document.body.childElementCount + ' htmlLen=' + document.body.innerHTML.length) : 'no-body'"
-                    ) { result, error in
-                        EmbedLogger.log("[LightboxWebView] probe result=\(String(describing: result)) error=\(String(describing: error))")
-                    }
-                }
-            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

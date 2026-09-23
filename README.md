@@ -129,6 +129,18 @@ struct ContentView: View {
 }
 ```
 
+### Debug Logging
+
+SDK internal diagnostic logging is disabled by default. Enable it while debugging through the public API:
+
+```swift
+#if DEBUG
+EmbedIOSSDK.setLoggingEnabled(true)
+#endif
+```
+
+Call `EmbedIOSSDK.setLoggingEnabled(false)` to disable it again. Logging only controls console output and does not enable additional DOM inspection or JavaScript probes.
+
 ### Initialization Request Details
 
 SDK 會呼叫：
