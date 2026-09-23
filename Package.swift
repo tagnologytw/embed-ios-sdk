@@ -16,6 +16,11 @@ let package = Package(
         .target(
             name: "EmbedIOSSDK",
             path: "Sources/EmbedIOSSDK"
+        ),
+        .testTarget(
+            name: "EmbedIOSSDKTests",
+            dependencies: ["EmbedIOSSDK"],
+            path: "Tests/EmbedIOSSDKTests"
         )
     ]
 )

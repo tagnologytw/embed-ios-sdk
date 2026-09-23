@@ -705,11 +705,20 @@ public struct EmbedWidgetClickEvent {
 public class EmbedWidgetDataManager: ObservableObject {
     public static let shared = EmbedWidgetDataManager()
 
+    typealias PageBundleFetcher = (
+        _ pageUrl: String,
+        _ mid: String,
+        _ payloadSecret: String,
+        _ baseURL: String
+    ) async throws -> EmbedAPI.PageBundleResponse
+
     private var cache: [String: CacheEntry] = [:]
     private var currentContext: InitContext?
-    private var initTask: Task<Void, Never>?
+    private var initTask: Task<EmbedWidgetLoadError?, Never>?
+    private var activeInitID: UUID?
     private var initState: InitState = .idle
     private var initError: EmbedWidgetLoadError?
+    private let pageBundleFetcher: PageBundleFetcher
 
     private enum InitState {
         case idle
@@ -735,7 +744,24 @@ public class EmbedWidgetDataManager: ObservableObject {
         let error: EmbedWidgetLoadError?
     }
 
-    private init() {}
+    private init(
+        pageBundleFetcher: @escaping PageBundleFetcher = { pageUrl, mid, payloadSecret, baseURL in
+            try await EmbedAPI.fetchPageBundle(
+                pageUrl: pageUrl,
+                mid: mid,
+                payloadSecret: payloadSecret,
+                baseURL: baseURL
+            )
+        }
+    ) {
+        self.pageBundleFetcher = pageBundleFetcher
+    }
+
+    static func _makeForTests(
+        pageBundleFetcher: @escaping PageBundleFetcher
+    ) -> EmbedWidgetDataManager {
+        EmbedWidgetDataManager(pageBundleFetcher: pageBundleFetcher)
+    }
 
     private func noDataResult(statusCode: EmbedWidgetLoadError.StatusCode, message: String, pageUrl: String, position: EmbedPosition) -> WidgetLoadResult {
         WidgetLoadResult(
@@ -806,6 +832,15 @@ public class EmbedWidgetDataManager: ObservableObject {
         )
     }
 
+    private func supersededInitializationError(pageUrl: String) -> EmbedWidgetLoadError {
+        EmbedWidgetLoadError(
+            statusCode: .pageMismatch,
+            message: "Initialization for \(pageUrl) was superseded by a newer page request.",
+            pageUrl: pageUrl,
+            position: .BELOW_BUY_BUTTON
+        )
+    }
+
     @discardableResult
     public func initialize(
         pageUrl: String,
@@ -833,9 +868,13 @@ public class EmbedWidgetDataManager: ObservableObject {
            currentContext == context,
            initState == .loading,
            let runningTask = initTask {
-            let _: Void = await runningTask.value
-            return initError
+            return await runningTask.value
         }
+
+        // A different page (or a force refresh) supersedes the previous request.
+        // Cancellation stops cooperative fetchers; activeInitID also prevents a
+        // non-cooperative stale request from mutating the new page state later.
+        initTask?.cancel()
 
         if forceRefresh {
             EmbedLogger.log("[EmbedWidgetDataManager] initialize forceRefresh=true, clearing cache for pageUrl=\(pageUrl)")
@@ -845,6 +884,8 @@ public class EmbedWidgetDataManager: ObservableObject {
         currentContext = context
         initError = nil
         initState = .loading
+        let initID = UUID()
+        activeInitID = initID
 
         if forceRefresh {
             // Immediately reset analytics tracking for re-entry, so stale visibility/session state
@@ -857,16 +898,24 @@ public class EmbedWidgetDataManager: ObservableObject {
             )
         }
 
-        let task = Task { @MainActor in
+        let fetchPageBundle = pageBundleFetcher
+        let task = Task<EmbedWidgetLoadError?, Never> { @MainActor in
             do {
                 let pageID = EmbedAPI.extractPageIdFromPageUrl(pageUrl) ?? "nil"
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize start. pageUrl=\(pageUrl), pageId=\(pageID), mid=\(mid)")
-                let response = try await EmbedAPI.fetchPageBundle(
-                    pageUrl: pageUrl,
-                    mid: mid,
-                    payloadSecret: payloadSecret,
-                    baseURL: baseURL
+                let response = try await fetchPageBundle(
+                    pageUrl,
+                    mid,
+                    payloadSecret,
+                    baseURL
                 )
+
+                guard self.activeInitID == initID,
+                      self.currentContext == context else {
+                    EmbedLogger.log("[EmbedWidgetDataManager] initialize result ignored because a newer page request is active. pageUrl=\(pageUrl)")
+                    return self.supersededInitializationError(pageUrl: pageUrl)
+                }
+
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize success. pageBundle.count=\(response.pageBundle.count)")
                 self.cache[pageUrl] = CacheEntry(
                     pageInfo: response.pageBundle
@@ -878,17 +927,34 @@ public class EmbedWidgetDataManager: ObservableObject {
                     forceNewSession: false
                 )
                 self.initState = .ready
+                self.initError = nil
+                return nil
             } catch {
+                guard self.activeInitID == initID,
+                      self.currentContext == context else {
+                    EmbedLogger.log("[EmbedWidgetDataManager] initialize error ignored because a newer page request is active. pageUrl=\(pageUrl)")
+                    return self.supersededInitializationError(pageUrl: pageUrl)
+                }
+
+                let loadError = self.classifyError(error, pageUrl: pageUrl, position: .BELOW_BUY_BUTTON)
                 self.initState = .failed
-                self.initError = self.classifyError(error, pageUrl: pageUrl, position: .BELOW_BUY_BUTTON)
-                EmbedLogger.log("[EmbedWidgetDataManager] initialize failed. error=\(self.initError?.message ?? error.localizedDescription)")
+                self.initError = loadError
+                EmbedLogger.log("[EmbedWidgetDataManager] initialize failed. error=\(loadError.message)")
+                return loadError
             }
         }
 
         initTask = task
-        let _: Void = await task.value
-        initTask = nil
-        return initError
+        let result = await task.value
+
+        // An older caller may resume after a newer initialize has already
+        // replaced initTask. Only the active request may clear shared state.
+        if activeInitID == initID {
+            initTask = nil
+            activeInitID = nil
+        }
+
+        return result
     }
 
     func getWidgetsForPositionResult(
@@ -1038,15 +1104,19 @@ public class EmbedWidgetDataManager: ObservableObject {
         if let pageUrl = pageUrl {
             cache.removeValue(forKey: pageUrl)
             if currentContext?.pageUrl == pageUrl {
+                initTask?.cancel()
                 currentContext = nil
                 initTask = nil
+                activeInitID = nil
                 initState = .idle
                 initError = nil
             }
         } else {
+            initTask?.cancel()
             cache.removeAll()
             currentContext = nil
             initTask = nil
+            activeInitID = nil
             initState = .idle
             initError = nil
         }
