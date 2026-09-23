@@ -18,6 +18,27 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - Swift 5.0+
 - Xcode 14.0+
 
+## Release Notes
+
+### 1.0.11
+
+- Widget 與 Lightbox 改用 SDK 私有、共用的 `WKWebsiteDataStore.nonPersistent()`，不再與 Host App 共用預設 cookie jar。
+- SDK WebView 的 cookie 與其他網站資料只保留於記憶體，不會寫入磁碟或跨 App 啟動保存；Host App 清除預設 store 也不會影響 SDK store。
+- 集中管理 Widget 與 Lightbox 的 WebView 設定，確保 JavaScript 與影音播放政策一致。
+
+### 1.0.10
+
+- 同一固定位置若有多個 FloatingMedia widget，會全部依時間順序垂直顯示，間距為 8pt。
+- 固定浮窗改用內容總高度，不再強制單一 224pt 高度。
+- 底部固定浮窗會避開 Safe Area，避免被 Host App 的底部 action bar 或系統區域遮擋。
+
+### 1.0.9
+
+- `EmbedWidgetView` 新增選填的 `pageUrl`；網址改變時會自動清除舊狀態並重新載入，不需額外使用 `.id(pageUrl)`。
+- 若 View 要求的 `pageUrl` 與 SDK 已初始化頁面不同，會透過 `onError` 回傳 `409 pageMismatch`，不再靜默顯示前一頁內容。
+- 初始化加入競態保護；較舊頁面的延遲成功或失敗結果不會覆蓋目前頁面。
+- 新增公開的 `EmbedIOSSDK.setLoggingEnabled(_:)`，並移除 Lightbox 載入後延遲執行的 DOM 探查程式。
+
 ## Installation
 
 ### Swift Package Manager (Recommended)
@@ -32,7 +53,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.8")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.11")
 ]
 ```
 
@@ -47,7 +68,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.0'
+pod 'EmbedIOSSDK', '~> 1.0.11'
 ```
 
 Then run:
@@ -308,7 +329,7 @@ SDK 的所有 widget 均渲染於 SDK **內部自行建立**的 `WKWebView`。`W
 | `defaultWebpagePreferences.allowsContentJavaScript` | `true` | widget 本體為 JavaScript，必要設定（iOS 14+ API，取代已棄用的 `javaScriptEnabled`） |
 | `allowsInlineMediaPlayback` | `true` | FloatingMedia 影音自動播放所必需 |
 | `mediaTypesRequiringUserActionForPlayback` | `[]`（空集合） | 允許影音不經使用者手勢即自動播放，FloatingMedia 所必需 |
-| `websiteDataStore` | 系統預設 | Cookie 存於 App 的預設 `WKWebsiteDataStore`。widget 功能不依賴 Host 站台的 cookie |
+| `websiteDataStore` | SDK 內共享的 `WKWebsiteDataStore.nonPersistent()` | Widget 與 Lightbox 共用 SDK 自有的記憶體型 store，不會使用 Host App 的預設 cookie jar，資料亦不會寫入磁碟 |
 | `customUserAgent` | 未設定 | 使用系統預設 User-Agent，後端不依賴特定 UA |
 
 SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），也未實作 `WKUIDelegate`，因此 widget 的 WebView 無法開啟任何新視窗——widget 不使用 `window.open`，所有導頁行為都經 JS bridge 交由 Host App 處理（見下方）。
@@ -337,6 +358,8 @@ widget HTML 與所有資源（JS / CSS / 影音）均由 `https://embed.tagnolog
 ### Cookie / User-Agent 政策
 
 - SDK 不讀取、不依賴 Host 站台或 Host App 的任何 cookie；widget 所需資料均經 `/widget/pageBundle` API 以加密 payload 取得。
+- SDK 內的 Widget 與 Lightbox WebView 共用一個獨立的 `WKWebsiteDataStore.nonPersistent()`；Host App 同步到預設 store 的登入 cookie 不會進入 SDK WebView，Host App 清除預設 store 時也不會清除 SDK 的 store。
+- SDK WebView 的 cookie 與其他網站資料只存在記憶體中，不會跨 App 啟動保留。
 - 未設定 `customUserAgent`，一律使用系統預設 UA。
 
 ### Host App 需要注意的唯一事項

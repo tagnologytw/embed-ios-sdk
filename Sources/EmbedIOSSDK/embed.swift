@@ -1707,6 +1707,25 @@ public struct EmbedView: View {
     }
 }
 
+// MARK: - SDK WebView Configuration
+@MainActor
+enum EmbedWebViewConfigurationFactory {
+    /// Keep SDK cookies and other website data in memory, isolated from the
+    /// Host App's persistent default data store. Reusing this store lets the
+    /// widget and Lightbox share SDK-owned session state while the app runs.
+    static let websiteDataStore = WKWebsiteDataStore.nonPersistent()
+
+    static func make() -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = websiteDataStore
+        // iOS 16+ uses this API instead of the deprecated javaScriptEnabled.
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        return configuration
+    }
+}
+
 // MARK: - EmbedWebView (UIViewRepresentable)
 struct EmbedWebView: UIViewRepresentable {
     let folderId: String
@@ -1737,12 +1756,7 @@ struct EmbedWebView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        // iOS 16+ 使用新的 API 替代已棄用的 javaScriptEnabled (iOS 14.0+)
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.allowsInlineMediaPlayback = true
-        // iOS 16+ 直接支援 mediaTypesRequiringUserActionForPlayback (iOS 10.0+)
-        configuration.mediaTypesRequiringUserActionForPlayback = []
+        let configuration = EmbedWebViewConfigurationFactory.make()
         configuration.userContentController.add(context.coordinator, name: EmbedBridge.resizeHandlerName)
         configuration.userContentController.add(context.coordinator, name: EmbedBridge.eventHandlerName)
 
@@ -1843,12 +1857,7 @@ struct LightboxWebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onEvent: onEvent, loadFailed: $loadFailed) }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        // iOS 16+ 使用新的 API 替代已棄用的 javaScriptEnabled (iOS 14.0+)
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.allowsInlineMediaPlayback = true
-        // iOS 16+ 直接支援 mediaTypesRequiringUserActionForPlayback (iOS 10.0+)
-        configuration.mediaTypesRequiringUserActionForPlayback = []
+        let configuration = EmbedWebViewConfigurationFactory.make()
         configuration.userContentController.add(context.coordinator, name: EmbedBridge.eventHandlerName)
 
         // 注入 bridge helper 至 Lightbox（同時支援 postMessage）
