@@ -286,6 +286,17 @@ public enum EmbedPosition: String, Codable {
 	case FIXED_TOP_RIGHT = "FIXED_TOP_RIGHT"
 	case FIXED_CENTER_LEFT = "FIXED_CENTER_LEFT"
 	case FIXED_CENTER_RIGHT = "FIXED_CENTER_RIGHT"
+
+    var widgetStackSpacing: CGFloat {
+        switch self {
+        case .FIXED_BOTTOM_LEFT, .FIXED_BOTTOM_RIGHT,
+             .FIXED_TOP_LEFT, .FIXED_TOP_RIGHT,
+             .FIXED_CENTER_LEFT, .FIXED_CENTER_RIGHT:
+            return 8
+        default:
+            return 0
+        }
+    }
 }
 
 // MARK: - SDK Namespace
@@ -1197,7 +1208,7 @@ public struct EmbedWidgetView: View {
                 .frame(height: 0)
 
             if !isLoading && errorMessage == nil && !folderInfos.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: position.widgetStackSpacing) {
                     ForEach(folderInfos, id: \.folderId) { folderInfo in
                         EmbedView(folderInfo: folderInfo, pageUrl: currentPageUrl, onClick: onClick)
                             .frame(maxWidth: .infinity, alignment: .leading)

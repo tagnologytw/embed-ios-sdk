@@ -184,6 +184,7 @@ The `position` parameter accepts the following values from `EmbedIOSSDK.Position
 - `EmbedIOSSDK.FIXED_CENTER_RIGHT` - Fixed at center right
 
 **Note:** Fixed positions are only for FloatingMedia widgets. The SDK automatically filters widgets based on the `floatingMediaPosition` field when using fixed positions.
+If multiple FloatingMedia widgets use the same fixed position, the SDK renders all of them vertically with 8pt spacing. Keep the host view width at `126` points, but do not force its height to `224`; the SDK calculates the combined height automatically.
 
 ### Fixed Position Widgets Example
 
@@ -211,6 +212,7 @@ struct ProductPageView: View {
                             position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
                             pageUrl: pageUrl
                         )
+                        .frame(width: 126)
                         Spacer()
                     }
                     .padding(.leading, 20)
