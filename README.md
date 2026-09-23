@@ -1,5 +1,7 @@
 # EmbedIOSSDK
 
+[![iOS SDK CI](https://github.com/tagnologytw/embed-ios-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/tagnologytw/embed-ios-sdk/actions/workflows/ci.yml)
+
 Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Features
