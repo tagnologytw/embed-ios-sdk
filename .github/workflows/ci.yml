@@ -36,30 +36,37 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKCatalystTests"
           CODE_SIGNING_ALLOWED=NO
 
-      # Runner VMs occasionally boot before CoreSimulator has loaded its devices,
-      # so pick an available iPhone at runtime and retry instead of hard-coding one.
-      - name: Select iOS simulator
+      # On some runner VMs xcodebuild does not list the installed simulators even
+      # though simctl does. Pick an iPhone from simctl whose runtime matches the
+      # active Xcode SDK, boot it, and hand its id to xcodebuild.
+      - name: Boot iOS simulator
         id: simulator
         if: github.event_name != 'pull_request'
         run: |
-          for attempt in 1 2 3; do
-            destinations=$(xcodebuild -showdestinations -scheme EmbedIOSSDK 2>/dev/null \
-              | grep 'platform:iOS Simulator' | grep 'name:iPhone' | grep -v placeholder || true)
-            line=$(echo "$destinations" | grep 'name:iPhone 16 Pro }' | head -1)
-            [ -z "$line" ] && line=$(echo "$destinations" | head -1)
-            if [ -n "$line" ]; then
-              echo "Using simulator: $line"
-              echo "id=$(echo "$line" | sed -E 's/.*id:([^,]+),.*/\1/')" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "No iPhone simulator available (attempt $attempt), restarting CoreSimulator..."
-            sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
-            xcrun simctl list devices > /dev/null 2>&1 || true
-            sleep 20
-          done
-          echo "::error::No iPhone simulator available after 3 attempts"
-          xcrun simctl list devices
-          exit 1
+          sdk_major=$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)
+          echo "iOS Simulator SDK major version: $sdk_major"
+          devices=$(xcrun simctl list devices available --json)
+          pick() {
+            echo "$devices" | jq -r --arg major "$sdk_major" --arg name "$1" '
+              [.devices | to_entries[]
+                | select(.key | test("SimRuntime\\.iOS-" + $major + "-"))
+                | .key as $runtime | .value[]
+                | select(.name | startswith($name))
+                | {udid, name, runtime: $runtime}]
+              | sort_by(.runtime) | last // empty | "\(.udid) \(.name) \(.runtime)"'
+          }
+          selected=$(pick "iPhone 16 Pro")
+          [ -z "$selected" ] && selected=$(pick "iPhone")
+          if [ -z "$selected" ]; then
+            echo "::error::No iPhone simulator for iOS $sdk_major"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $selected"
+          udid=${selected%% *}
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          echo "id=$udid" >> "$GITHUB_OUTPUT"
 
       - name: Run iOS integration tests
         if: github.event_name != 'pull_request'
