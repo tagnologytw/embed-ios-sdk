@@ -14,19 +14,8 @@ struct ProductPageView: View {
     @State private var showBelowMainProductInfoWidget: Bool = true
     @State private var showAboveRecommendationWidget: Bool = true
 
-    // 固定位置 FloatingMedia widgets 的狀態
-    @State private var showFixedBottomLeftWidget: Bool = true
-    @State private var hasFixedBottomLeftContent: Bool = false
-    @State private var showFixedBottomRightWidget: Bool = true
-    @State private var hasFixedBottomRightContent: Bool = false
-    @State private var showFixedTopLeftWidget: Bool = true
-    @State private var hasFixedTopLeftContent: Bool = false
-    @State private var showFixedTopRightWidget: Bool = true
-    @State private var hasFixedTopRightContent: Bool = false
-    @State private var showFixedCenterLeftWidget: Bool = true
-    @State private var hasFixedCenterLeftContent: Bool = false
-    @State private var showFixedCenterRightWidget: Bool = true
-    @State private var hasFixedCenterRightContent: Bool = false
+    // 固定位置 FloatingMedia widgets：只放入 SDK 回傳有內容的版位，避免建立空版位
+    @State private var floatingPositions: [EmbedIOSSDK.Position] = []
     @State private var goToHomePage: Bool = false
 
     private let tagItems: [String] = [
@@ -127,133 +116,24 @@ struct ProductPageView: View {
                 }
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
             
-            // 固定位置的 FloatingMedia widgets
+            // 固定位置的 FloatingMedia widgets（僅放入 getFloatingPositions 回傳的版位）
             ZStack {
-                // 左下角
-                if isEmbedInitialized && showFixedBottomLeftWidget {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedBottomLeftContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedBottomLeftWidget, slotName: "FIXED_BOTTOM_LEFT")
-                                }
-                            )
-                            Spacer()
-                        }
-                        .padding(.leading, 20)
-                        .padding(.bottom, 20)
-                    }
-                }
-                
-                // 右下角
-                if isEmbedInitialized && showFixedBottomRightWidget {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_BOTTOM_RIGHT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedBottomRightContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedBottomRightWidget, slotName: "FIXED_BOTTOM_RIGHT")
-                                }
-                            )
-                        }
-                        .padding(.trailing, 20)
-                        .padding(.bottom, 20)
-                    }
-                }
-                
-                // 左上角
-                if isEmbedInitialized && showFixedTopLeftWidget {
-                    VStack {
-                        HStack {
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_TOP_LEFT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedTopLeftContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedTopLeftWidget, slotName: "FIXED_TOP_LEFT")
-                                }
-                            )
-                            Spacer()
-                        }
-                        .padding(.leading, 20)
-                        .padding(.top, 20)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-                
-                // 右上角
-                if isEmbedInitialized && showFixedTopRightWidget {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_TOP_RIGHT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedTopRightContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedTopRightWidget, slotName: "FIXED_TOP_RIGHT")
-                                }
-                            )
-                        }
-                        .padding(.trailing, 20)
-                        .padding(.top, 20)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                }
-                
-                // 左側中央
-                if isEmbedInitialized && showFixedCenterLeftWidget {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_CENTER_LEFT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedCenterLeftContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedCenterLeftWidget, slotName: "FIXED_CENTER_LEFT")
-                                }
-                            )
-                            Spacer()
-                        }
-                        .padding(.leading, 20)
-                        Spacer()
-                    }
-                }
-                
-                // 右側中央
-                if isEmbedInitialized && showFixedCenterRightWidget {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            FixedFloatingMediaWidgetView(
-                                position: EmbedIOSSDK.FIXED_CENTER_RIGHT,
-                                pageUrl: pageUrl,
-                                hasContent: $hasFixedCenterRightContent,
-                                onError: { error in
-                                    handleWidgetSDKCallback(error: error, show: $showFixedCenterRightWidget, slotName: "FIXED_CENTER_RIGHT")
-                                }
-                            )
-                        }
-                        .padding(.trailing, 20)
-                        Spacer()
+                if isEmbedInitialized {
+                    ForEach(floatingPositions, id: \.rawValue) { position in
+                        FixedFloatingMediaWidgetView(
+                            position: position,
+                            pageUrl: pageUrl,
+                            onError: { error in
+                                handleFloatingWidgetError(error: error, position: position)
+                            }
+                        )
+                        .padding(floatingPadding(for: position))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: floatingAlignment(for: position))
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(edges: [.leading, .trailing])
-            .allowsHitTesting(true)
 
             VStack {
                 HStack {
@@ -292,17 +172,11 @@ struct ProductPageView: View {
                     return
                 }
 
+                // initialize 時 SDK 已一併取得浮窗版位，這裡不用再帶參數；只放入回傳的版位，避免建立空版位
+                floatingPositions = await EmbedIOSSDK.getFloatingPositions(onError: { error in
+                    print("[ProductPageView] getFloatingPositions failed, statusCode=\(error.statusCode), message=\(error.message)")
+                })
                 isEmbedInitialized = true
-
-                // 5 秒後檢查所有固定位置的 widgets，沒有內容則隱藏
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                    checkAndHideWidgetIfNoContent(show: $showFixedBottomLeftWidget, hasContent: hasFixedBottomLeftContent)
-                    checkAndHideWidgetIfNoContent(show: $showFixedBottomRightWidget, hasContent: hasFixedBottomRightContent)
-                    checkAndHideWidgetIfNoContent(show: $showFixedTopLeftWidget, hasContent: hasFixedTopLeftContent)
-                    checkAndHideWidgetIfNoContent(show: $showFixedTopRightWidget, hasContent: hasFixedTopRightContent)
-                    checkAndHideWidgetIfNoContent(show: $showFixedCenterLeftWidget, hasContent: hasFixedCenterLeftContent)
-                    checkAndHideWidgetIfNoContent(show: $showFixedCenterRightWidget, hasContent: hasFixedCenterRightContent)
-                }
             }
         }
         .onDisappear {
@@ -311,14 +185,37 @@ struct ProductPageView: View {
         }
     }
     
-    private func checkAndHideWidgetIfNoContent(show: Binding<Bool>, hasContent: Bool) {
-        if !hasContent {
-            withAnimation {
-                show.wrappedValue = false
-            }
+    /// 浮窗版位載入失敗（例如 204 無資料）時，從清單移除該版位
+    private func handleFloatingWidgetError(error: EmbedWidgetLoadError, position: EmbedIOSSDK.Position) {
+        print("[ProductPageView] \(position.rawValue) statusCode=\(error.statusCode), message=\(error.message)")
+        withAnimation {
+            floatingPositions.removeAll { $0 == position }
         }
     }
-    
+
+    private func floatingAlignment(for position: EmbedIOSSDK.Position) -> Alignment {
+        switch position {
+        case .FIXED_TOP_LEFT: return .topLeading
+        case .FIXED_TOP_RIGHT: return .topTrailing
+        case .FIXED_CENTER_LEFT: return .leading
+        case .FIXED_CENTER_RIGHT: return .trailing
+        case .FIXED_BOTTOM_LEFT: return .bottomLeading
+        default: return .bottomTrailing
+        }
+    }
+
+    private func floatingPadding(for position: EmbedIOSSDK.Position) -> EdgeInsets {
+        let isLeft = [.FIXED_TOP_LEFT, .FIXED_CENTER_LEFT, .FIXED_BOTTOM_LEFT].contains(position)
+        let isTop = [.FIXED_TOP_LEFT, .FIXED_TOP_RIGHT].contains(position)
+        let isBottom = [.FIXED_BOTTOM_LEFT, .FIXED_BOTTOM_RIGHT].contains(position)
+        return EdgeInsets(
+            top: isTop ? 20 : 0,
+            leading: isLeft ? 20 : 0,
+            bottom: isBottom ? 20 : 0,
+            trailing: isLeft ? 0 : 20
+        )
+    }
+
     private func handleWidgetSDKCallback(error: EmbedWidgetLoadError, show: Binding<Bool>, slotName: String) {
         if error.statusCode == EmbedWidgetLoadError.StatusCode.initializing.rawValue ||
             error.statusCode == EmbedWidgetLoadError.StatusCode.notInitialized.rawValue {
@@ -954,60 +851,21 @@ struct SimpleHomePageView: View {
 // MARK: - FixedFloatingMediaWidgetView
 /**
  * @struct FixedFloatingMediaWidgetView
- * @description 通用的固定位置 FloatingMedia widget view，用於顯示所有 FIXED_* 位置的 widgets
+ * @description 通用的固定位置 FloatingMedia widget view。
+ *              只會用 EmbedIOSSDK.getFloatingPositions 回傳的版位建立，因此不需再偵測是否有內容。
  */
 struct FixedFloatingMediaWidgetView: View {
     let position: EmbedIOSSDK.Position
     let pageUrl: String
-    @Binding var hasContent: Bool
     let onError: (EmbedWidgetLoadError) -> Void
-    
-    @State private var widgetHasRendered: Bool = false
-    
+
     private let widgetWidth: CGFloat = 126
-    
+
     var body: some View {
         EmbedWidgetView(position: position, pageUrl: pageUrl, onError: onError)
             // Keep the width fixed but let the SDK expand vertically when the
             // same FIXED_* position contains more than one FloatingMedia widget.
             .frame(width: widgetWidth)
-            .background(
-                GeometryReader { geometry in
-                    Color.clear
-                        .preference(key: WidgetHeightPreferenceKey.self, value: geometry.size.height)
-                        .onAppear {
-                            widgetHasRendered = true
-                            checkForContent(height: geometry.size.height)
-                        }
-                        .onChange(of: geometry.size.height) { newHeight in
-                            checkForContent(height: newHeight)
-                        }
-                }
-            )
-            .onPreferenceChange(WidgetHeightPreferenceKey.self) { height in
-                checkForContent(height: height)
-            }
-            .contentShape(Rectangle())
-            .allowsHitTesting(true)
-    }
-    
-    private func checkForContent(height: CGFloat) {
-        if height > 0 && !hasContent {
-            hasContent = true
-        }
-    }
-}
-
-// MARK: - WidgetHeightPreferenceKey
-/**
- * @struct WidgetHeightPreferenceKey
- * @description PreferenceKey 用於檢測 widget 的高度（判斷是否有內容）
- */
-struct WidgetHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
