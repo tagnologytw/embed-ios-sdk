@@ -46,17 +46,18 @@ jobs:
           sdk_major=$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)
           echo "iOS Simulator SDK major version: $sdk_major"
           devices=$(xcrun simctl list devices available --json)
+          # pick <exact|prefix> <name>
           pick() {
-            echo "$devices" | jq -r --arg major "$sdk_major" --arg name "$1" '
+            echo "$devices" | jq -r --arg major "$sdk_major" --arg mode "$1" --arg name "$2" '
               [.devices | to_entries[]
                 | select(.key | test("SimRuntime\\.iOS-" + $major + "-"))
                 | .key as $runtime | .value[]
-                | select(.name | startswith($name))
+                | select(if $mode == "exact" then .name == $name else (.name | startswith($name)) end)
                 | {udid, name, runtime: $runtime}]
               | sort_by(.runtime) | last // empty | "\(.udid) \(.name) \(.runtime)"'
           }
-          selected=$(pick "iPhone 16 Pro")
-          [ -z "$selected" ] && selected=$(pick "iPhone")
+          selected=$(pick exact "iPhone 16 Pro")
+          [ -z "$selected" ] && selected=$(pick prefix "iPhone")
           if [ -z "$selected" ]; then
             echo "::error::No iPhone simulator for iOS $sdk_major"
             xcrun simctl list devices available
