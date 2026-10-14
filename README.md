@@ -22,6 +22,13 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
+### 1.0.12
+
+- 新增 `EmbedIOSSDK.getFloatingPositions()`：`initialize` 會同時呼叫 `/widget/floatingPositions` 取得此頁應出現的浮窗版位，初始化後直接取用、不需再帶參數；App 只需為回傳的 `FIXED_*` 版位建立 `EmbedWidgetView`，避免建立空版位。
+- 浮窗版位請求失敗不會讓 `initialize` 失敗，只會讓 `getFloatingPositions()` 回傳 `[]` 並透過 `onError` 回報。
+- 新增 `EmbedAPI.fetchFloatingPositions(...)`（會 throw）與 `EmbedPosition.isFloatingPosition`。
+- 範例改為依 `getFloatingPositions()` 結果動態放入浮窗版位，移除 5 秒後偵測高度再隱藏的做法。
+
 ### 1.0.11
 
 - Widget 與 Lightbox 改用 SDK 私有、共用的 `WKWebsiteDataStore.nonPersistent()`，不再與 Host App 共用預設 cookie jar。
@@ -55,7 +62,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.11")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.12")
 ]
 ```
 
@@ -70,7 +77,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.11'
+pod 'EmbedIOSSDK', '~> 1.0.12'
 ```
 
 Then run:
@@ -211,13 +218,21 @@ If multiple FloatingMedia widgets use the same fixed position, the SDK renders a
 
 ### Fixed Position Widgets Example
 
-For fixed position widgets (FloatingMedia), you can overlay them on your content:
+浮窗（FloatingMedia）版位請在 `initialize` 成功後呼叫 `EmbedIOSSDK.getFloatingPositions()`，只為回傳的 `FIXED_*` 版位建立 `EmbedWidgetView`，就不會產生空版位。
+
+- 不用帶參數：`initialize` 時 SDK 已用同一組 `pageUrl` / `mid` / `secret` 一併取得浮窗版位。
+- 回傳 `[EmbedPosition]`；此頁沒有浮窗時回傳 `[]`。
+- 尚未初始化、初始化失敗或浮窗請求失敗時也回傳 `[]`，錯誤透過選填的 `onError` 回傳；浮窗請求失敗不影響一般版位。
+- 初始化進行中呼叫會等待完成後再回傳。
 
 ```swift
 struct ProductPageView: View {
     let pageUrl: String
-    @State private var isEmbedInitialized: Bool = true
-    @State private var showFixedWidget: Bool = true
+    let mid: String
+    let secret: String
+
+    @State private var isEmbedInitialized = false
+    @State private var floatingPositions: [EmbedIOSSDK.Position] = []
 
     var body: some View {
         ZStack {
@@ -226,26 +241,73 @@ struct ProductPageView: View {
                 // ... your content
             }
 
-            // Fixed position widget overlay
-            if isEmbedInitialized && showFixedWidget {
-                VStack {
-                    Spacer()
-                    HStack {
-                        EmbedWidgetView(
-                            position: EmbedIOSSDK.FIXED_BOTTOM_LEFT,
-                            pageUrl: pageUrl
-                        )
-                        .frame(width: 126)
-                        Spacer()
-                    }
-                    .padding(.leading, 20)
-                    .padding(.bottom, 20)
+            // 只放入 SDK 回傳的浮窗版位
+            if isEmbedInitialized {
+                ForEach(floatingPositions, id: \.rawValue) { position in
+                    EmbedWidgetView(
+                        position: position,
+                        pageUrl: pageUrl,
+                        onError: { _ in
+                            floatingPositions.removeAll { $0 == position }
+                        }
+                    )
+                    .frame(width: 126)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment(for: position))
                 }
             }
+        }
+        .task(id: pageUrl) {
+            isEmbedInitialized = false
+            floatingPositions = []
+
+            let initError = await EmbedIOSSDK.initialize(pageUrl: pageUrl, mid: mid, secret: secret)
+            guard !Task.isCancelled, initError == nil else { return }
+
+            floatingPositions = await EmbedIOSSDK.getFloatingPositions()
+            guard !Task.isCancelled else { return }
+            isEmbedInitialized = true
+        }
+    }
+
+    private func alignment(for position: EmbedIOSSDK.Position) -> Alignment {
+        switch position {
+        case .FIXED_TOP_LEFT: return .topLeading
+        case .FIXED_TOP_RIGHT: return .topTrailing
+        case .FIXED_CENTER_LEFT: return .leading
+        case .FIXED_CENTER_RIGHT: return .trailing
+        case .FIXED_BOTTOM_LEFT: return .bottomLeading
+        default: return .bottomTrailing
         }
     }
 }
 ```
+
+完整範例見 `example/ContentView.swift`。
+
+#### Floating Positions Request Details
+
+`initialize` 會與 `/widget/pageBundle` 同時呼叫：
+
+- `[POST] {BASE_URL}/widget/floatingPositions`
+
+```json
+{
+  "mid": 41458,
+  "pageUrl": "https://partnertest4.91app.com/SalePage/Index/8778040",
+  "secret": "<payloadSecret>"
+}
+```
+
+Response：
+
+```json
+{ "message": "success", "positions": ["FIXED_BOTTOM_RIGHT"] }
+```
+
+- `mid` 為數字字串時以 int 送出，否則以 string 送出。
+- 無法辨識或非 `FIXED_*` 的值會被忽略，重複值會去除。
+- 若需要自行處理錯誤，可改用會 throw 的 `EmbedAPI.fetchFloatingPositions(pageUrl:mid:secret:baseURL:)`。
 
 ### Parameters
 
@@ -255,6 +317,9 @@ struct ProductPageView: View {
   - `secret` (String, required): `payloadSecret`（Base64 且 decode 後必須是 32 bytes）。**各商店（mid）獨立一組**，由 Tagnology 於開通時逐店簽發，僅對該 mid 有效；單一金鑰外洩影響範圍僅限該商店，可單獨重新簽發
   - `baseURL` (String, optional): API 網域，預設 `https://embed.tagnology.co/api`
   - `forceRefresh` (Bool, optional): 是否忽略 in-memory cache 重新打 API（預設 `false`）
+- **`getFloatingPositions(onError:)`** (call after `initialize`, before mounting `FIXED_*` widgets)
+  - 不需帶參數，沿用 `initialize` 的 `pageUrl` / `mid` / `secret` / `baseURL`
+  - `onError` ((EmbedWidgetLoadError) -> Void, optional): 無法取得版位時回呼（`428` 尚未初始化、初始化失敗的錯誤、`500` / `408` / `520` 浮窗請求失敗），此時函式回傳 `[]`；錯誤中的 `position` 對此呼叫無意義
 - **`position`** (EmbedIOSSDK.Position, required): The position where the widget should be displayed. See Position Enum above for available values.
 - **`pageUrl`** (String, optional): The page this view should display. Passing it is recommended; changing it reloads the view and prevents content from the previously initialized page from being rendered. Omitting it preserves the legacy shared-current-page behavior.
 - **`onError`** ((EmbedWidgetLoadError) -> Void, optional): Called for non-`200` status codes. Use this callback to hide the slot in your App.

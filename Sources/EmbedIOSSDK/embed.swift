@@ -287,15 +287,20 @@ public enum EmbedPosition: String, Codable {
 	case FIXED_CENTER_LEFT = "FIXED_CENTER_LEFT"
 	case FIXED_CENTER_RIGHT = "FIXED_CENTER_RIGHT"
 
-    var widgetStackSpacing: CGFloat {
+    /// true for FIXED_* positions, which only render FloatingMedia widgets.
+    public var isFloatingPosition: Bool {
         switch self {
         case .FIXED_BOTTOM_LEFT, .FIXED_BOTTOM_RIGHT,
              .FIXED_TOP_LEFT, .FIXED_TOP_RIGHT,
              .FIXED_CENTER_LEFT, .FIXED_CENTER_RIGHT:
-            return 8
+            return true
         default:
-            return 0
+            return false
         }
+    }
+
+    var widgetStackSpacing: CGFloat {
+        isFloatingPosition ? 8 : 0
     }
 }
 
@@ -358,6 +363,31 @@ public enum EmbedIOSSDK {
             baseURL: baseURL,
             forceRefresh: forceRefresh
         )
+    }
+
+    /**
+     * @function getFloatingPositions
+     * @description Returns the FIXED_* (FloatingMedia) positions that have content for the page
+     *              passed to initialize(pageUrl:mid:secret:). initialize fetches them together with
+     *              pageBundle, so no extra parameters are needed here. Only mount EmbedWidgetView for
+     *              the returned positions, so the App never creates an empty floating slot.
+     *              - Initialization in progress: waits for it to finish.
+     *              - Not initialized / initialization failed / request failed: returns [] and calls onError.
+     *
+     * @param {(EmbedWidgetLoadError) -> Void?} onError - Optional callback when no positions can be resolved.
+     *        `position` in the error is not meaningful for this call.
+     *
+     * @returns {[EmbedPosition]} FIXED_* positions to mount; [] when there is none or on error.
+     */
+    @available(iOS 16.0, *)
+    public static func getFloatingPositions(
+        onError: ((EmbedWidgetLoadError) -> Void)? = nil
+    ) async -> [EmbedPosition] {
+        let result = await EmbedWidgetDataManager.shared.floatingPositionsResult()
+        if let error = result.error {
+            onError?(error)
+        }
+        return result.positions
     }
 
     public static func notifyPageDidLeave(baseURL: String = EmbedAPI.defaultBaseURL) {
@@ -532,6 +562,102 @@ public enum EmbedAPI {
         }
 
         return try JSONDecoder().decode(PageBundleResponse.self, from: data)
+    }
+
+    /**
+     * @struct FloatingPositionsResponse
+     * @description Response structure from /widget/floatingPositions.
+     */
+    public struct FloatingPositionsResponse: Codable {
+        public let message: String
+        public let positions: [String]
+
+        public init(message: String, positions: [String]) {
+            self.message = message
+            self.positions = positions
+        }
+    }
+
+    static func makeFloatingPositionsRequest(
+        pageUrl: String,
+        mid: String,
+        secret: String,
+        baseURL: String = defaultBaseURL
+    ) throws -> URLRequest {
+        guard URL(string: pageUrl) != nil, !pageUrl.isEmpty else {
+            throw EmbedAPIError.invalidPageURL
+        }
+        guard let requestURL = URL(string: "\(baseURL)/widget/floatingPositions") else {
+            throw URLError(.badURL)
+        }
+
+        // The API accepts mid as int or string; prefer int to match pageBundle.
+        let midValue: Any = Int(mid) ?? mid
+        let payload: [String: Any] = [
+            "mid": midValue,
+            "pageUrl": pageUrl,
+            "secret": secret
+        ]
+
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+        return request
+    }
+
+    /**
+     * @function parseFloatingPositions
+     * @description Maps API position strings to EmbedPosition, keeping only FIXED_* values.
+     *              Unknown values are ignored and duplicates are removed while preserving order.
+     */
+    static func parseFloatingPositions(_ rawPositions: [String]) -> [EmbedPosition] {
+        var seen = Set<EmbedPosition>()
+        var positions: [EmbedPosition] = []
+        for raw in rawPositions {
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard let position = EmbedPosition(rawValue: normalized), position.isFloatingPosition else {
+                EmbedLogger.log("[EmbedAPI] floatingPositions ignored unknown position=\(raw)")
+                continue
+            }
+            if seen.insert(position).inserted {
+                positions.append(position)
+            }
+        }
+        return positions
+    }
+
+    /**
+     * @function fetchFloatingPositions
+     * @description Calls /widget/floatingPositions to get the FIXED_* positions that have
+     *              FloatingMedia content for this page. Throws on network / server errors.
+     */
+    public static func fetchFloatingPositions(
+        pageUrl: String,
+        mid: String,
+        secret: String,
+        baseURL: String = defaultBaseURL
+    ) async throws -> [EmbedPosition] {
+        let request = try makeFloatingPositionsRequest(
+            pageUrl: pageUrl,
+            mid: mid,
+            secret: secret,
+            baseURL: baseURL
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        guard 200..<300 ~= http.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+
+        let decoded = try JSONDecoder().decode(FloatingPositionsResponse.self, from: data)
+        return parseFloatingPositions(decoded.positions)
     }
 }
 
@@ -735,6 +861,13 @@ public class EmbedWidgetDataManager: ObservableObject {
         _ baseURL: String
     ) async throws -> EmbedAPI.PageBundleResponse
 
+    typealias FloatingPositionsFetcher = (
+        _ pageUrl: String,
+        _ mid: String,
+        _ secret: String,
+        _ baseURL: String
+    ) async throws -> [EmbedPosition]
+
     private var cache: [String: CacheEntry] = [:]
     private var currentContext: InitContext?
     private var initTask: Task<EmbedWidgetLoadError?, Never>?
@@ -742,6 +875,7 @@ public class EmbedWidgetDataManager: ObservableObject {
     private var initState: InitState = .idle
     private var initError: EmbedWidgetLoadError?
     private let pageBundleFetcher: PageBundleFetcher
+    private let floatingPositionsFetcher: FloatingPositionsFetcher
 
     private enum InitState {
         case idle
@@ -759,6 +893,12 @@ public class EmbedWidgetDataManager: ObservableObject {
 
     private struct CacheEntry {
         let pageInfo: [EmbedFolderInfo]
+        let floatingPositions: Result<[EmbedPosition], Error>
+    }
+
+    struct FloatingPositionsResult {
+        let positions: [EmbedPosition]
+        let error: EmbedWidgetLoadError?
     }
 
     struct WidgetLoadResult {
@@ -775,15 +915,28 @@ public class EmbedWidgetDataManager: ObservableObject {
                 payloadSecret: payloadSecret,
                 baseURL: baseURL
             )
+        },
+        floatingPositionsFetcher: @escaping FloatingPositionsFetcher = { pageUrl, mid, secret, baseURL in
+            try await EmbedAPI.fetchFloatingPositions(
+                pageUrl: pageUrl,
+                mid: mid,
+                secret: secret,
+                baseURL: baseURL
+            )
         }
     ) {
         self.pageBundleFetcher = pageBundleFetcher
+        self.floatingPositionsFetcher = floatingPositionsFetcher
     }
 
     static func _makeForTests(
+        floatingPositionsFetcher: @escaping FloatingPositionsFetcher = { _, _, _, _ in [] },
         pageBundleFetcher: @escaping PageBundleFetcher
     ) -> EmbedWidgetDataManager {
-        EmbedWidgetDataManager(pageBundleFetcher: pageBundleFetcher)
+        EmbedWidgetDataManager(
+            pageBundleFetcher: pageBundleFetcher,
+            floatingPositionsFetcher: floatingPositionsFetcher
+        )
     }
 
     private func noDataResult(statusCode: EmbedWidgetLoadError.StatusCode, message: String, pageUrl: String, position: EmbedPosition) -> WidgetLoadResult {
@@ -922,16 +1075,27 @@ public class EmbedWidgetDataManager: ObservableObject {
         }
 
         let fetchPageBundle = pageBundleFetcher
+        let fetchFloatingPositions = floatingPositionsFetcher
         let task = Task<EmbedWidgetLoadError?, Never> { @MainActor in
             do {
                 let pageID = EmbedAPI.extractPageIdFromPageUrl(pageUrl) ?? "nil"
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize start. pageUrl=\(pageUrl), pageId=\(pageID), mid=\(mid)")
+                // floatingPositions is requested in parallel with pageBundle. Its failure
+                // does not fail initialization; it only means no floating slot is mounted.
+                async let floatingOutcome: Result<[EmbedPosition], Error> = {
+                    do {
+                        return .success(try await fetchFloatingPositions(pageUrl, mid, payloadSecret, baseURL))
+                    } catch {
+                        return .failure(error)
+                    }
+                }()
                 let response = try await fetchPageBundle(
                     pageUrl,
                     mid,
                     payloadSecret,
                     baseURL
                 )
+                let floatingPositions = await floatingOutcome
 
                 guard self.activeInitID == initID,
                       self.currentContext == context else {
@@ -940,8 +1104,15 @@ public class EmbedWidgetDataManager: ObservableObject {
                 }
 
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize success. pageBundle.count=\(response.pageBundle.count)")
+                switch floatingPositions {
+                case .success(let positions):
+                    EmbedLogger.log("[EmbedWidgetDataManager] floatingPositions=\(positions.map(\.rawValue))")
+                case .failure(let error):
+                    EmbedLogger.log("[EmbedWidgetDataManager] floatingPositions failed. error=\(error.localizedDescription)")
+                }
                 self.cache[pageUrl] = CacheEntry(
-                    pageInfo: response.pageBundle
+                    pageInfo: response.pageBundle,
+                    floatingPositions: floatingPositions
                 )
                 EmbedAnalyticsManager.shared.beginPageIfNeeded(
                     pageUrl: pageUrl,
@@ -1067,6 +1238,67 @@ public class EmbedWidgetDataManager: ObservableObject {
             pageUrl: context.pageUrl,
             error: nil
         )
+    }
+
+    func floatingPositionsResult() async -> FloatingPositionsResult {
+        guard let requestedContext = currentContext else {
+            return FloatingPositionsResult(
+                positions: [],
+                error: EmbedWidgetLoadError(
+                    statusCode: .notInitialized,
+                    message: "SDK not initialized. Please call EmbedIOSSDK.initialize(pageUrl:mid:secret:) first.",
+                    pageUrl: "",
+                    position: .FIXED_BOTTOM_RIGHT
+                )
+            )
+        }
+
+        // Wait for the running initialization. A newer initialize replaces initTask,
+        // so keep waiting until the latest one has settled.
+        var awaitedTask: Task<EmbedWidgetLoadError?, Never>?
+        while initState == .loading, let task = initTask, task != awaitedTask {
+            awaitedTask = task
+            _ = await task.value
+        }
+
+        let pageUrl = requestedContext.pageUrl
+        guard currentContext == requestedContext else {
+            return FloatingPositionsResult(
+                positions: [],
+                error: EmbedWidgetLoadError(
+                    statusCode: .pageMismatch,
+                    message: "Page changed while waiting for floating positions of \(pageUrl).",
+                    pageUrl: pageUrl,
+                    position: .FIXED_BOTTOM_RIGHT
+                )
+            )
+        }
+
+        if initState == .failed, let initError {
+            return FloatingPositionsResult(positions: [], error: initError.withPosition(.FIXED_BOTTOM_RIGHT))
+        }
+
+        guard initState == .ready, let cached = cache[pageUrl] else {
+            return FloatingPositionsResult(
+                positions: [],
+                error: EmbedWidgetLoadError(
+                    statusCode: .notInitialized,
+                    message: "SDK not initialized. Please call EmbedIOSSDK.initialize(pageUrl:mid:secret:) first.",
+                    pageUrl: pageUrl,
+                    position: .FIXED_BOTTOM_RIGHT
+                )
+            )
+        }
+
+        switch cached.floatingPositions {
+        case .success(let positions):
+            return FloatingPositionsResult(positions: positions, error: nil)
+        case .failure(let error):
+            return FloatingPositionsResult(
+                positions: [],
+                error: classifyError(error, pageUrl: pageUrl, position: .FIXED_BOTTOM_RIGHT)
+            )
+        }
     }
 
     private func getFloatingMediaPositionForEmbedPosition(_ position: EmbedPosition) -> String? {
