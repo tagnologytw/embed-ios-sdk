@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,12 +36,45 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKCatalystTests"
           CODE_SIGNING_ALLOWED=NO
 
+      # On some runner VMs xcodebuild does not list the installed simulators even
+      # though simctl does. Pick an iPhone from simctl whose runtime matches the
+      # active Xcode SDK, boot it, and hand its id to xcodebuild.
+      - name: Boot iOS simulator
+        id: simulator
+        if: github.event_name != 'pull_request'
+        run: |
+          sdk_major=$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)
+          echo "iOS Simulator SDK major version: $sdk_major"
+          devices=$(xcrun simctl list devices available --json)
+          # pick <exact|prefix> <name>
+          pick() {
+            echo "$devices" | jq -r --arg major "$sdk_major" --arg mode "$1" --arg name "$2" '
+              [.devices | to_entries[]
+                | select(.key | test("SimRuntime\\.iOS-" + $major + "-"))
+                | .key as $runtime | .value[]
+                | select(if $mode == "exact" then .name == $name else (.name | startswith($name)) end)
+                | {udid, name, runtime: $runtime}]
+              | sort_by(.runtime) | last // empty | "\(.udid) \(.name) \(.runtime)"'
+          }
+          selected=$(pick exact "iPhone 16 Pro")
+          [ -z "$selected" ] && selected=$(pick prefix "iPhone")
+          if [ -z "$selected" ]; then
+            echo "::error::No iPhone simulator for iOS $sdk_major"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $selected"
+          udid=${selected%% *}
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          echo "id=$udid" >> "$GITHUB_OUTPUT"
+
       - name: Run iOS integration tests
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: >-
           xcodebuild test
           -scheme EmbedIOSSDK
-          -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest'
+          -destination 'id=${{ steps.simulator.outputs.id }}'
           -derivedDataPath "$RUNNER_TEMP/EmbedIOSSDKTests"
           CODE_SIGNING_ALLOWED=NO
 
