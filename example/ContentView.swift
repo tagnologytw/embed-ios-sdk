@@ -6,6 +6,7 @@ struct ProductPageView: View {
     // 當前頁面的 URL
     @State private var pageUrl: String = "https://partnertest7.91app.com/SalePage/Index/9394400"
     @State private var mid: String = "41461"
+    // 此 payloadSecret 僅供測試環境（partnertest7，mid 41461）使用，因此以明文記錄；正式串接請替換成各商店自己的 payloadSecret
     @State private var secretKey: String = "ouzHR2algjnEqBV42n+dGDAUejipDTlGFHHZuFqss+4="
     @State private var isEmbedInitialized: Bool = false
     
