@@ -6,8 +6,7 @@ struct ProductPageView: View {
     // 當前頁面的 URL
     @State private var pageUrl: String = "https://partnertest7.91app.com/SalePage/Index/9394400"
     @State private var mid: String = "41461"
-    // TODO: 替換成該 mid 的 payloadSecret（Base64，decode 後 32 bytes），由 Tagnology 逐店簽發；請勿提交真實金鑰
-    @State private var secretKey: String = "YOUR_PAYLOAD_SECRET_BASE64"
+    @State private var secretKey: String = "ouzHR2algjnEqBV42n+dGDAUejipDTlGFHHZuFqss+4="
     @State private var isEmbedInitialized: Bool = false
     
     // 一般版位 widgets 的顯示狀態
