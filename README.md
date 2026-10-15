@@ -22,6 +22,12 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
+### 1.0.13
+
+- SDK 程式碼與 1.0.12 相同，無 API 變更。
+- 範例改用 partnertest7 測試頁（mid 41461），並讓嵌入版位在 `initialize` 成功後即載入，不必等待 `getFloatingPositions()`；`getFloatingPositions()` 只決定影音浮窗要放在哪些 `FIXED_*` 版位。
+- CI 改為執行時自動挑選可用的 iOS 模擬器。
+
 ### 1.0.12
 
 - 新增 `EmbedIOSSDK.getFloatingPositions()`：`initialize` 會同時呼叫 `/widget/floatingPositions` 取得此頁應出現的浮窗版位，初始化後直接取用、不需再帶參數；App 只需為回傳的 `FIXED_*` 版位建立 `EmbedWidgetView`，避免建立空版位。
@@ -62,7 +68,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.12")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.13")
 ]
 ```
 
@@ -77,7 +83,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.12'
+pod 'EmbedIOSSDK', '~> 1.0.13'
 ```
 
 Then run:
