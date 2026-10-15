@@ -4,9 +4,10 @@ import WebKit
 
 struct ProductPageView: View {
     // 當前頁面的 URL
-    @State private var pageUrl: String = "https://partnertest4.91app.com/SalePage/Index/8778040"
-    @State private var mid: String = "41458"
-    @State private var secretKey: String = "P5Sayl2krqbPV8ORsekcSDoWFUEiurKW2WMbm62b5Cs="
+    @State private var pageUrl: String = "https://partnertest7.91app.com/SalePage/Index/9394400"
+    @State private var mid: String = "41461"
+    // TODO: 替換成該 mid 的 payloadSecret（Base64，decode 後 32 bytes），由 Tagnology 逐店簽發；請勿提交真實金鑰
+    @State private var secretKey: String = "YOUR_PAYLOAD_SECRET_BASE64"
     @State private var isEmbedInitialized: Bool = false
     
     // 一般版位 widgets 的顯示狀態
@@ -172,11 +173,13 @@ struct ProductPageView: View {
                     return
                 }
 
-                // initialize 時 SDK 已一併取得浮窗版位，這裡不用再帶參數；只放入回傳的版位，避免建立空版位
+                // 嵌入版位只依賴 initialize，不需等 getFloatingPositions
+                isEmbedInitialized = true
+
+                // getFloatingPositions 只決定「影音浮窗」要放在哪些 FIXED_* 版位，與嵌入版位無關
                 floatingPositions = await EmbedIOSSDK.getFloatingPositions(onError: { error in
                     print("[ProductPageView] getFloatingPositions failed, statusCode=\(error.statusCode), message=\(error.message)")
                 })
-                isEmbedInitialized = true
             }
         }
         .onDisappear {
