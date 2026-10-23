@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### Unreleased
+### 1.0.14
 
 - 修正點擊版位開啟 Lightbox 時的短暫黑屏：版位出現時就預先載入 Lightbox 頁面（與 Web 版預先建立隱藏的 Lightbox iframe 相同），同一頁的所有版位共用並重複使用，點擊後不必再等整個頁面載入。
 - Lightbox 頁面回報 `readyLB` 後才送出點擊訊息；內容顯示前改顯示載入指示，不再只有黑底。
@@ -76,7 +76,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.13")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.14")
 ]
 ```
 
@@ -91,7 +91,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.13'
+pod 'EmbedIOSSDK', '~> 1.0.14'
 ```
 
 Then run:
