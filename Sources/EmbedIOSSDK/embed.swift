@@ -1582,16 +1582,17 @@ public struct EmbedView: View {
 
     @State private var contentHeight: CGFloat = 0
     @State private var isLightboxPresented = false
-    @State private var pendingLightboxMessageJSON: String?
+    // 預先載入、同頁共用的 Lightbox，點擊時直接顯示，不必等整個 Lightbox 頁面載入
+    @State private var lightboxSession: EmbedLightboxSession?
+    // Lightbox 頁面回報 toggleLB open=true（內容已顯示）前先顯示載入指示，避免只看到黑底
+    @State private var isLightboxContentShown = false
+    // 頁面自行送出 toggleLB open=false 才是乾淨關閉；其他關閉方式需重載頁面，避免影片在背景繼續播放
+    @State private var lightboxClosedByPage = false
     // 當 widget property position == fixed 時切換為 true，整個 WebView 會變成 fullscreen fixed
     @State private var isFullscreenFixed = false
     @State private var lightboxLoadFailed = false
     @State private var hasTrackedVisibility = false
     @State private var visibilityProbeTick = 0
-
-    private var lightboxURL: URL {
-        EmbedHTMLBuilder.lightBoxURL(pageUrl: pageUrl)
-    }
 
     /**
      * @function init
@@ -1651,18 +1652,22 @@ public struct EmbedView: View {
             }
         }
         // Lightbox（fullscreen）
-        .fullScreenCover(isPresented: $isLightboxPresented) {
+        .fullScreenCover(isPresented: $isLightboxPresented, onDismiss: handleLightboxDismiss) {
             ZStack(alignment: .topTrailing) {
-                // Lightbox 內容
-                LightboxWebView(
-                    url: lightboxURL,
-                    messageJSON: $pendingLightboxMessageJSON,
-                    onEvent: handleEmbedEvent,
-                    loadFailed: $lightboxLoadFailed
-                )
-                .background(Color.black.opacity(0.95))
-                .ignoresSafeArea()
-                
+                Color.black.opacity(0.95)
+                    .ignoresSafeArea()
+
+                // Lightbox 內容（留在 Safe Area 內，避免底部文字與商品連結被 Home 指示條區域切掉）
+                if let lightboxSession {
+                    LightboxWebView(session: lightboxSession)
+                }
+
+                if !isLightboxContentShown && !lightboxLoadFailed {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+
                 // 只在載入失敗時顯示關閉按鈕
                 if lightboxLoadFailed {
                     VStack {
@@ -1688,12 +1693,12 @@ public struct EmbedView: View {
                 }
             }
             .interactiveDismissDisabled(false) // 允許下拉關閉
-            .onAppear {
-                // 重置載入失敗狀態
-                lightboxLoadFailed = false
-            }
         }
         .onAppear {
+            // 版位出現時就預先載入 Lightbox（與 Web 版在頁面載入時建立隱藏的 Lightbox iframe 相同）
+            if lightboxSession?.pageUrl != pageUrl {
+                lightboxSession = EmbedLightboxStore.session(for: pageUrl)
+            }
             // Returning to the same page should allow visibility tracking to run again.
             hasTrackedVisibility = false
             visibilityProbeTick = 0
@@ -1760,8 +1765,7 @@ public struct EmbedView: View {
                   let jsonString = String(data: jsonData, encoding: .utf8) else {
                 return
             }
-            pendingLightboxMessageJSON = jsonString
-            handleLightboxToggle(true)
+            openLightbox(with: jsonString)
         case "toggleLB":
             let openValue = event.payload["open"]
             let shouldOpen: Bool? = {
@@ -1783,24 +1787,51 @@ public struct EmbedView: View {
             guard let open = shouldOpen else {
                 return
             }
-            handleLightboxToggle(open)
-            if !open {
-                pendingLightboxMessageJSON = nil
+            if open {
+                isLightboxContentShown = true
+            } else {
+                lightboxClosedByPage = true
             }
+            handleLightboxToggle(open)
         default:
             break
         }
     }
 
     // MARK: - lightbox
+    private func openLightbox(with messageJSON: String) {
+        let session: EmbedLightboxSession
+        if let current = lightboxSession, current.pageUrl == pageUrl {
+            session = current
+        } else {
+            session = EmbedLightboxStore.session(for: pageUrl)
+            lightboxSession = session
+        }
+        session.onEvent = handleEmbedEvent
+        session.onLoadFailed = { lightboxLoadFailed = true }
+        isLightboxContentShown = false
+        lightboxClosedByPage = false
+        // send() 會重新載入先前載入失敗的頁面
+        session.send(messageJSON)
+        lightboxLoadFailed = session.loadFailed
+        handleLightboxToggle(true)
+    }
+
     private func handleLightboxToggle(_ shouldOpen: Bool) {
         // 確保在主線程上執行
         DispatchQueue.main.async {
             self.isLightboxPresented = shouldOpen
             if !shouldOpen {
-                self.pendingLightboxMessageJSON = nil
                 self.lightboxLoadFailed = false // 重置載入失敗狀態
             }
+        }
+    }
+
+    private func handleLightboxDismiss() {
+        lightboxSession?.onEvent = nil
+        lightboxSession?.onLoadFailed = nil
+        if !lightboxClosedByPage {
+            lightboxSession?.reset()
         }
     }
 
@@ -2079,18 +2110,38 @@ struct EmbedWebView: UIViewRepresentable {
     }
 }
 
-// MARK: - LightboxWebView (UIViewRepresentable)
-struct LightboxWebView: UIViewRepresentable {
-    let url: URL
-    @Binding var messageJSON: String?
-    let onEvent: (EmbedWebView.EmbedEvent) -> Void
-    @Binding var loadFailed: Bool
+// MARK: - Lightbox preloading
+/**
+ * @class EmbedLightboxSession
+ * @description Owns the Lightbox WKWebView for one page and keeps it loaded between taps.
+ *              The Lightbox page is a full web app; loading it only after a tap left the
+ *              cover empty (black) for about two seconds. Like the web embed, which creates
+ *              a hidden Lightbox iframe when the page loads, the SDK now loads it as soon as
+ *              a widget appears and reuses it for every tap on that page.
+ */
+@MainActor
+final class EmbedLightboxSession: NSObject, WKNavigationDelegate {
+    let pageUrl: String
+    let webView: WKWebView
 
-    func makeCoordinator() -> Coordinator { Coordinator(onEvent: onEvent, loadFailed: $loadFailed) }
+    /// Lightbox events go to the EmbedView that is currently presenting the Lightbox.
+    var onEvent: ((EmbedWebView.EmbedEvent) -> Void)?
+    var onLoadFailed: (() -> Void)?
+    private(set) var loadFailed = false
 
-    func makeUIView(context: Context) -> WKWebView {
+    private let url: URL
+    private let messageHandler = EmbedWeakScriptMessageHandler()
+    // The click is only delivered after the page posts readyLB (its message listener is bound).
+    private var isPageReady = false
+    private var pendingMessageJSON: String?
+    private var readyFallback: DispatchWorkItem?
+
+    init(pageUrl: String) {
+        self.pageUrl = pageUrl
+        self.url = EmbedHTMLBuilder.lightBoxURL(pageUrl: pageUrl)
+
         let configuration = EmbedWebViewConfigurationFactory.make()
-        configuration.userContentController.add(context.coordinator, name: EmbedBridge.eventHandlerName)
+        configuration.userContentController.add(messageHandler, name: EmbedBridge.eventHandlerName)
 
         // 注入 bridge helper 至 Lightbox（同時支援 postMessage）
         let scriptSource = """
@@ -2127,86 +2178,186 @@ struct LightboxWebView: UIViewRepresentable {
         let userScript = WKUserScript(source: scriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         configuration.userContentController.addUserScript(userScript)
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
+        // Lay the page out at screen size while it is preloaded off screen.
+        webView = WKWebView(frame: UIScreen.main.bounds, configuration: configuration)
         webView.scrollView.isScrollEnabled = false
+        // The web view is laid out inside the safe area. Automatic insets would shift the
+        // page down by the status bar height and, with scrolling off, cut off its bottom
+        // (caption and product links).
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
         webView.backgroundColor = .clear
 
-        context.coordinator.webView = webView
-        context.coordinator.pendingMessageJSON = messageJSON
+        super.init()
+        webView.navigationDelegate = self
+        messageHandler.onMessage = { [weak self] body in
+            self?.handleMessage(body)
+        }
+        load()
+    }
 
+    /**
+     * @function send
+     * @description Delivers a click message to the Lightbox page, now if it is ready or once it posts readyLB.
+     *
+     * @param {String} messageJSON - The `{ eventType: "click", item }` message as JSON.
+     */
+    func send(_ messageJSON: String) {
+        if loadFailed {
+            load()
+        }
+        pendingMessageJSON = messageJSON
+        flushPendingMessage()
+    }
+
+    /**
+     * @function reset
+     * @description Reloads the page to discard its state. Used when the Lightbox was closed
+     *              without the page closing itself, so media in it would otherwise keep playing.
+     */
+    func reset() {
+        pendingMessageJSON = nil
+        load()
+    }
+
+    private func load() {
+        EmbedLogger.log("[LightboxSession] load url=\(url.absoluteString)")
+        isPageReady = false
+        loadFailed = false
+        readyFallback?.cancel()
         webView.load(URLRequest(url: url))
-        return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        context.coordinator.pendingMessageJSON = messageJSON
-        context.coordinator.flushPendingMessage()
+    private func markReady(reason: String) {
+        readyFallback?.cancel()
+        guard !isPageReady else { return }
+        EmbedLogger.log("[LightboxSession] ready reason=\(reason)")
+        isPageReady = true
+        flushPendingMessage()
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-        weak var webView: WKWebView?
-        var pendingMessageJSON: String?
-        private var isContentLoaded = false
-        private let onEvent: (EmbedWebView.EmbedEvent) -> Void
-        @Binding var loadFailed: Bool
-
-        init(onEvent: @escaping (EmbedWebView.EmbedEvent) -> Void, loadFailed: Binding<Bool>) {
-            self.onEvent = onEvent
-            self._loadFailed = loadFailed
+    private func flushPendingMessage() {
+        guard isPageReady, let jsonString = pendingMessageJSON else {
+            EmbedLogger.log("[LightboxSession] flush skipped. ready=\(isPageReady) hasPending=\(pendingMessageJSON != nil)")
+            return
         }
+        pendingMessageJSON = nil
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            EmbedLogger.log("[LightboxWebView] didFinish url=\(webView.url?.absoluteString ?? "nil")")
-            isContentLoaded = true
-            flushPendingMessage()
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            EmbedLogger.log("[LightboxWebView] Navigation failed: \(error.localizedDescription)")
-            DispatchQueue.main.async { [weak self] in
-                self?.loadFailed = true
+        EmbedLogger.log("[LightboxSession] flushing message len=\(jsonString.count)")
+        // Dispatch MessageEvent into the lightbox page
+        let script = """
+        window.dispatchEvent(new MessageEvent('message', { data: \(jsonString), origin: '\(EmbedHTMLBuilder.origin)' }));
+        """
+        webView.evaluateJavaScript(script) { _, error in
+            if let error {
+                EmbedLogger.log("[LightboxSession] flush dispatch error=\(error.localizedDescription)")
             }
         }
-        
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            EmbedLogger.log("[LightboxWebView] Provisional navigation failed: \(error.localizedDescription)")
-            DispatchQueue.main.async { [weak self] in
-                self?.loadFailed = true
-            }
-        }
+    }
 
-        func flushPendingMessage() {
-            guard isContentLoaded,
-                  let jsonString = pendingMessageJSON,
-                  let webView else {
-                EmbedLogger.log("[LightboxWebView] flush skipped. loaded=\(isContentLoaded) hasPending=\(pendingMessageJSON != nil)")
-                return
-            }
-
-            EmbedLogger.log("[LightboxWebView] flushing message len=\(jsonString.count)")
-            // Dispatch MessageEvent into the lightbox page
-            let script = """
-            window.dispatchEvent(new MessageEvent('message', { data: \(jsonString), origin: '\(EmbedHTMLBuilder.origin)' }));
-            """
-            webView.evaluateJavaScript(script) { _, error in
-                if let error {
-                    EmbedLogger.log("[LightboxWebView] flush dispatch error=\(error.localizedDescription)")
-                }
-            }
-            pendingMessageJSON = nil
+    private func handleMessage(_ body: Any) {
+        guard let embedEvent = EmbedWebView.makeEvent(from: body) else { return }
+        if embedEvent.type == "readyLB" {
+            markReady(reason: "readyLB")
+            return
         }
+        onEvent?(embedEvent)
+    }
 
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == EmbedBridge.eventHandlerName,
-                  let embedEvent = EmbedWebView.makeEvent(from: message.body) else {
-                return
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.onEvent(embedEvent)
-            }
+    private func failLoad(_ error: Error) {
+        // Navigations cancelled by a newer load are not failures.
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        EmbedLogger.log("[LightboxSession] Navigation failed: \(error.localizedDescription)")
+        loadFailed = true
+        onLoadFailed?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        EmbedLogger.log("[LightboxSession] didFinish url=\(webView.url?.absoluteString ?? "nil")")
+        guard !isPageReady else { return }
+        // Fall back for pages that never post readyLB.
+        let fallback = DispatchWorkItem { [weak self] in
+            self?.markReady(reason: "didFinish fallback")
         }
+        readyFallback = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: fallback)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        failLoad(error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        failLoad(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        EmbedLogger.log("[LightboxSession] web content process terminated, reloading")
+        load()
+    }
+}
+
+/// Forwards script messages without the user content controller retaining the session.
+final class EmbedWeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    var onMessage: ((Any) -> Void)?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == EmbedBridge.eventHandlerName else { return }
+        let body = message.body
+        DispatchQueue.main.async { [weak self] in
+            self?.onMessage?(body)
+        }
+    }
+}
+
+/**
+ * @enum EmbedLightboxStore
+ * @description Keeps the preloaded Lightbox for the page currently shown. All widgets on a
+ *              page share it, the same as the single Lightbox iframe of the web embed.
+ */
+@MainActor
+enum EmbedLightboxStore {
+    private static var current: EmbedLightboxSession?
+
+    static func session(for pageUrl: String) -> EmbedLightboxSession {
+        if let current, current.pageUrl == pageUrl {
+            return current
+        }
+        // A view still showing the previous page keeps its own reference.
+        let session = EmbedLightboxSession(pageUrl: pageUrl)
+        current = session
+        return session
+    }
+}
+
+// MARK: - LightboxWebView (UIViewRepresentable)
+/// Hosts the session's preloaded WKWebView inside the fullScreenCover.
+struct LightboxWebView: UIViewRepresentable {
+    let session: EmbedLightboxSession
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .clear
+        attachWebView(to: container)
+        return container
+    }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        attachWebView(to: container)
+    }
+
+    static func dismantleUIView(_ container: UIView, coordinator: ()) {
+        // Detach only; the session keeps the web view loaded for the next tap.
+        container.subviews.forEach { $0.removeFromSuperview() }
+    }
+
+    private func attachWebView(to container: UIView) {
+        let webView = session.webView
+        guard webView.superview !== container else { return }
+        container.subviews.forEach { $0.removeFromSuperview() }
+        webView.frame = container.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(webView)
     }
 }
 
