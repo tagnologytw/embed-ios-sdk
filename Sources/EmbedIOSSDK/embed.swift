@@ -302,6 +302,19 @@ public enum EmbedPosition: String, Codable {
     var widgetStackSpacing: CGFloat {
         isFloatingPosition ? 8 : 0
     }
+
+    /// Maps a FloatingMedia widget's floatingMediaPosition (e.g. "BottomRight") to its FIXED_* position.
+    init?(floatingMediaPosition: String?) {
+        switch floatingMediaPosition?.lowercased() {
+        case "bottomleft": self = .FIXED_BOTTOM_LEFT
+        case "bottomright": self = .FIXED_BOTTOM_RIGHT
+        case "topleft": self = .FIXED_TOP_LEFT
+        case "topright": self = .FIXED_TOP_RIGHT
+        case "centerleft": self = .FIXED_CENTER_LEFT
+        case "centerright": self = .FIXED_CENTER_RIGHT
+        default: return nil
+        }
+    }
 }
 
 // MARK: - SDK Namespace
@@ -743,6 +756,16 @@ public struct EmbedFolderInfo: Identifiable, Codable, Hashable {
             return floatingMediaPosition
         }
         return setting?["floatingMediaPosition"]?.stringValue
+    }
+
+    /// The position the widget is shown at. FloatingMedia widgets are shown at the FIXED_*
+    /// position of their floatingMediaPosition; their embedLocation does not apply.
+    var displayPosition: String? {
+        if layout?.lowercased() == "floatingmedia",
+           let position = EmbedPosition(floatingMediaPosition: resolvedFloatingMediaPosition) {
+            return position.rawValue
+        }
+        return embedLocation ?? resolvedFloatingMediaPosition ?? layout
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1743,7 +1766,7 @@ public struct EmbedView: View {
             let clickEvent = EmbedWidgetClickEvent(
                 folderId: (item["folderId"] as? String) ?? folderInfo.folderId,
                 folderName: (item["folderName"] as? String) ?? folderInfo.folderName,
-                position: folderInfo.embedLocation ?? folderInfo.resolvedFloatingMediaPosition ?? folderInfo.layout,
+                position: folderInfo.displayPosition,
                 mediaId: resolvedMediaId,
                 url: pageUrl
             )
@@ -1970,6 +1993,37 @@ public struct EmbedView: View {
     }
 }
 
+// MARK: - External links
+/**
+ * @enum EmbedLinkOpener
+ * @description Opens links the widget and Lightbox pages send outside the SDK (product links
+ *              use `window.open(url, "_blank")`). WKWebView drops those unless the SDK handles
+ *              them, so a product tap did nothing. Like the Android SDK, links that leave the
+ *              embed host go to the system, which opens the browser or an app that claims the link.
+ */
+enum EmbedLinkOpener {
+    private static let externalSchemes: Set<String> = ["http", "https", "mailto", "tel", "line"]
+    private static let embedHosts: Set<String> = ["embed.tagnology.co", "www.embed.tagnology.co"]
+
+    static func shouldOpenExternally(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), externalSchemes.contains(scheme) else {
+            return false
+        }
+        guard scheme == "http" || scheme == "https" else { return true }
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        return !embedHosts.contains(host)
+    }
+
+    /// Returns true when the navigation was handed to the system and must not load in the web view.
+    @MainActor
+    static func openIfExternal(_ navigationAction: WKNavigationAction) -> Bool {
+        guard let url = navigationAction.request.url, shouldOpenExternally(url) else { return false }
+        EmbedLogger.log("[EmbedLinkOpener] open url=\(url.absoluteString)")
+        UIApplication.shared.open(url)
+        return true
+    }
+}
+
 // MARK: - SDK WebView Configuration
 @MainActor
 enum EmbedWebViewConfigurationFactory {
@@ -2029,6 +2083,7 @@ struct EmbedWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         
         // 確保 WebView 可以接收用戶交互
         webView.isUserInteractionEnabled = true
@@ -2044,13 +2099,13 @@ struct EmbedWebView: UIViewRepresentable {
         // no-op for now
     }
 
-    private func loadWidget(into webView: WKWebView) {
+    fileprivate func loadWidget(into webView: WKWebView) {
         let htmlString = EmbedHTMLBuilder.buildHTML(folderId: folderId, pageUrl: pageUrl, layout: layout)
         webView.loadHTMLString(htmlString, baseURL: EmbedHTMLBuilder.assetBaseURL)
     }
 
     // MARK: - Coordinator
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         private var parent: EmbedWebView
         private let onEvent: (EmbedEvent) -> Void
         weak var webView: WKWebView?
@@ -2072,6 +2127,7 @@ struct EmbedWebView: UIViewRepresentable {
                     }
                     return nil
                 }()
+                EmbedLogger.log("[EmbedWebView] resize folderId=\(parent.folderId) height=\(reportedHeight.map { "\($0)" } ?? "nil")")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     if let height = reportedHeight {
@@ -2095,7 +2151,36 @@ struct EmbedWebView: UIViewRepresentable {
             }
         }
 
+        // window.open（商品連結）交給系統開啟
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            _ = EmbedLinkOpener.openIfExternal(navigationAction)
+            return nil
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.navigationType == .linkActivated, EmbedLinkOpener.openIfExternal(navigationAction) {
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            EmbedLogger.log("[EmbedWebView] didFail folderId=\(parent.folderId) error=\(error.localizedDescription)")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            EmbedLogger.log("[EmbedWebView] didFailProvisional folderId=\(parent.folderId) error=\(error.localizedDescription)")
+        }
+
+        // iOS 會在 App 於背景時回收 WebContent 程序，此時版位會變成空白，需重新載入
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            EmbedLogger.log("[EmbedWebView] web content process terminated folderId=\(parent.folderId), reloading")
+            parent.loadWidget(into: webView)
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            EmbedLogger.log("[EmbedWebView] didFinish folderId=\(parent.folderId)")
             // 初次載入時回報高度
             webView.evaluateJavaScript("document.body.scrollHeight") { [weak self] result, _ in
                 guard let self = self else { return }
@@ -2120,7 +2205,7 @@ struct EmbedWebView: UIViewRepresentable {
  *              a widget appears and reuses it for every tap on that page.
  */
 @MainActor
-final class EmbedLightboxSession: NSObject, WKNavigationDelegate {
+final class EmbedLightboxSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     let pageUrl: String
     let webView: WKWebView
 
@@ -2190,6 +2275,7 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate {
 
         super.init()
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         messageHandler.onMessage = { [weak self] body in
             self?.handleMessage(body)
         }
@@ -2294,6 +2380,21 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         EmbedLogger.log("[LightboxSession] web content process terminated, reloading")
         load()
+    }
+
+    // Product links use window.open; hand them to the system instead of dropping them.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        _ = EmbedLinkOpener.openIfExternal(navigationAction)
+        return nil
+    }
+
+    // A tapped link must not replace the reused Lightbox page.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.navigationType == .linkActivated, EmbedLinkOpener.openIfExternal(navigationAction) {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
     }
 }
 
