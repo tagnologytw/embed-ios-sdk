@@ -25,6 +25,9 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - 修正點擊版位開啟 Lightbox 時的短暫黑屏：版位出現時就預先載入 Lightbox 頁面（與 Web 版預先建立隱藏的 Lightbox iframe 相同），同一頁的所有版位共用並重複使用，點擊後不必再等整個頁面載入。
 - Lightbox 頁面回報 `readyLB` 後才送出點擊訊息；內容顯示前改顯示載入指示，不再只有黑底。
 - 修正 Lightbox 底部的貼文說明與商品連結被切掉：Lightbox 內容改為留在 Safe Area 內，並關閉 WebView 的自動 inset 調整（原本會把整頁往下推一個狀態列高度）。
+- 修正 Lightbox 與版位內的商品連結點了沒反應：網頁以 `window.open` 開啟的連結原本會被 WKWebView 丟棄，現在非 embed.tagnology.co 的連結交給系統開啟（瀏覽器或對應 App），與 Android SDK 相同。
+- 修正影音浮窗的 `onClick` 回報 `position`：改回報實際顯示的 `FIXED_*` 版位（例如 `FIXED_BOTTOM_RIGHT`），不再回報 pageBundle 預設的 `embedLocation`。
+- App 在背景時若系統回收 WebContent 程序，版位會自動重新載入，不再停在空白。
 - 移除 GitHub Actions CI（macOS runner 成本過高），改用本地執行 `scripts/test-local.sh`，見〈本地測試〉。
 
 ### 1.0.13
@@ -500,6 +503,8 @@ scripts/test-local.sh
 ```
 
 依序執行 `swift package dump-package`、在 iOS 模擬器跑單元測試、以及 `generic/platform=iOS` 的實機建置。加上 `--pod-lint` 會再跑 `pod lib lint`；設定 `SIMULATOR_ID=<udid>` 可指定模擬器。
+
+接著依 [`.claude/skills/ios-pre-pr/SKILL.md`](.claude/skills/ios-pre-pr/SKILL.md) 在模擬器用 `ectest` 實際操作所有版位與 Lightbox（Claude Code 會以 `ios-pre-pr` skill 載入）。審核標準：不可跑版、不可出現全黑畫面。`scripts/sim-record.sh start|stop <name>` 會錄下點擊過程、產生 contact sheet，並以 ffmpeg `blackdetect` 檢查全黑畫面。
 
 ## Test Status (2026-05-26)
 
