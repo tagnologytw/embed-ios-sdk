@@ -1,7 +1,5 @@
 # EmbedIOSSDK
 
-[![iOS SDK CI](https://github.com/tagnologytw/embed-ios-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/tagnologytw/embed-ios-sdk/actions/workflows/ci.yml)
-
 Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Features
@@ -21,6 +19,13 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - Xcode 14.0+
 
 ## Release Notes
+
+### Unreleased
+
+- 修正點擊版位開啟 Lightbox 時的短暫黑屏：版位出現時就預先載入 Lightbox 頁面（與 Web 版預先建立隱藏的 Lightbox iframe 相同），同一頁的所有版位共用並重複使用，點擊後不必再等整個頁面載入。
+- Lightbox 頁面回報 `readyLB` 後才送出點擊訊息；內容顯示前改顯示載入指示，不再只有黑底。
+- 修正 Lightbox 底部的貼文說明與商品連結被切掉：Lightbox 內容改為留在 Safe Area 內，並關閉 WebView 的自動 inset 調整（原本會把整頁往下推一個狀態列高度）。
+- 移除 GitHub Actions CI（macOS runner 成本過高），改用本地執行 `scripts/test-local.sh`，見〈本地測試〉。
 
 ### 1.0.13
 
@@ -485,6 +490,16 @@ Callback payload fields:
 Debug output:
 
 - SDK prints click payload summary with `[EmbedWidgetClick] ...` when user clicks widget content.
+
+## 本地測試
+
+GitHub Actions CI 已移除，發版或合併前請在本機執行：
+
+```bash
+scripts/test-local.sh
+```
+
+依序執行 `swift package dump-package`、在 iOS 模擬器跑單元測試、以及 `generic/platform=iOS` 的實機建置。加上 `--pod-lint` 會再跑 `pod lib lint`；設定 `SIMULATOR_ID=<udid>` 可指定模擬器。
 
 ## Test Status (2026-05-26)
 
