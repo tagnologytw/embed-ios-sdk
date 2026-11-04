@@ -127,6 +127,13 @@ final class EmbedInitializeTimeoutTests: XCTestCase {
         XCTAssertNil(error)
     }
 
+    func testUnboundedTimeoutsRunWithoutALimitInsteadOfCrashing() async throws {
+        for seconds in [TimeInterval.infinity, .nan, 1e12, -1] {
+            let value = try await EmbedDeadline.run(seconds: seconds) { 7 }
+            XCTAssertEqual(value, 7, "seconds=\(seconds)")
+        }
+    }
+
     func testDeadlineReturnsTheResultWhenItArrivesInTime() async throws {
         let value = try await EmbedDeadline.run(seconds: 1) { 42 }
         XCTAssertEqual(value, 42)

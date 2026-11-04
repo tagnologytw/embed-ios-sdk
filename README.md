@@ -25,7 +25,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - `initialize` 新增讀取時間上限 `timeout`（預設 `EmbedIOSSDK.defaultInitializeTimeout` = 3 秒）：超過時間仍未取得頁面資料就回傳 `408` 逾時錯誤，App 不顯示版位即可（91APP 要求比照 App 內其他版位，API 超過 3 秒不顯示）。
   - 計時從呼叫 `initialize` 開始；即使連線卡住不回應，`initialize` 也會在時限到時回傳。
   - 同時發出的浮窗版位請求共用同一個時限，逾時只會讓 `getFloatingPositions()` 回傳 `[]`，不會拖慢 `initialize`。
-  - `timeout` 傳 `0` 或負數代表不限時（舊行為）。逾時的頁面不會寫入快取，下次 `initialize` 會重新請求。
+  - `timeout` 傳 `0`、負數或 `.infinity` 代表不限時（舊行為）。逾時的頁面不會寫入快取，下次 `initialize` 會重新請求。
   - 只限制取得資料的時間；版位內容的網頁載入與繪製不在此限。
 
 ### 1.0.14
@@ -339,7 +339,7 @@ Response：
   - `secret` (String, required): `payloadSecret`（Base64 且 decode 後必須是 32 bytes）。**各商店（mid）獨立一組**，由 Tagnology 於開通時逐店簽發，僅對該 mid 有效；單一金鑰外洩影響範圍僅限該商店，可單獨重新簽發
   - `baseURL` (String, optional): API 網域，預設 `https://embed.tagnology.co/api`
   - `forceRefresh` (Bool, optional): 是否忽略 in-memory cache 重新打 API（預設 `false`）
-  - `timeout` (TimeInterval, optional): 取得頁面資料的時間上限，預設 `EmbedIOSSDK.defaultInitializeTimeout`（3 秒）。超過即回傳 `408`，請不要顯示版位；`0` 或負數代表不限時
+  - `timeout` (TimeInterval, optional): 取得頁面資料的時間上限，預設 `EmbedIOSSDK.defaultInitializeTimeout`（3 秒）。超過即回傳 `408`，請不要顯示版位；`0`、負數或 `.infinity` 代表不限時
 - **`getFloatingPositions(onError:)`** (call after `initialize`, before mounting `FIXED_*` widgets)
   - 不需帶參數，沿用 `initialize` 的 `pageUrl` / `mid` / `secret` / `baseURL`
   - `onError` ((EmbedWidgetLoadError) -> Void, optional): 無法取得版位時回呼（`428` 尚未初始化、初始化失敗的錯誤、`500` / `408` / `520` 浮窗請求失敗），此時函式回傳 `[]`；錯誤中的 `position` 對此呼叫無意義

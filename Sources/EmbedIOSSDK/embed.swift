@@ -892,13 +892,16 @@ enum EmbedDeadline {
      * @description Runs operation and returns its result, or throws URLError(.timedOut) once
      *              seconds pass first. The operation is cancelled when the deadline wins.
      *
-     * @param {TimeInterval} seconds - Time limit. 0 or less runs operation without a limit.
+     * @param {TimeInterval} seconds - Time limit. 0 or less, .infinity, NaN or a value too large
+     *        to sleep for runs operation without a limit.
      * @param {() async throws -> T} operation - The request to run.
      *
      * @returns {T} The operation's result.
      */
     static func run<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
-        guard seconds > 0 else { return try await operation() }
+        let nanoseconds = seconds * 1_000_000_000
+        // UInt64(_:) traps on infinity and on values past UInt64.max.
+        guard seconds > 0, nanoseconds < Double(UInt64.max) else { return try await operation() }
         let race = Race<T>()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -911,7 +914,7 @@ enum EmbedDeadline {
                     }
                 })
                 race.track(Task {
-                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                    try? await Task.sleep(nanoseconds: UInt64(nanoseconds))
                     race.finish(.failure(URLError(.timedOut)))
                 })
             }
