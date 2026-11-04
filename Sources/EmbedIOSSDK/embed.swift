@@ -358,6 +358,9 @@ public enum EmbedIOSSDK {
      * @param {String} mid - Merchant ID.
      * @param {String} secret - payloadSecret used to encrypt request body.
      * @param {String} baseURL - API base URL. Defaults to SDK endpoint.
+     * @param {Bool} forceRefresh - true to ignore the cached data for pageUrl and request it again.
+     * @param {TimeInterval} timeout - Seconds allowed to get the page data (defaultInitializeTimeout, 3).
+     *        Past it, initialize returns a `.timeout` (408) error. 0 or less means no limit.
      *
      * @returns {EmbedWidgetLoadError?} nil if success; error when initialization fails.
      */
@@ -367,16 +370,22 @@ public enum EmbedIOSSDK {
         mid: String,
         secret: String,
         baseURL: String = EmbedAPI.defaultBaseURL,
-        forceRefresh: Bool = false
+        forceRefresh: Bool = false,
+        timeout: TimeInterval = defaultInitializeTimeout
     ) async -> EmbedWidgetLoadError? {
         await EmbedWidgetDataManager.shared.initialize(
             pageUrl: pageUrl,
             mid: mid,
             payloadSecret: secret,
             baseURL: baseURL,
-            forceRefresh: forceRefresh
+            forceRefresh: forceRefresh,
+            timeout: timeout
         )
     }
+
+    /// Default limit for initialize(pageUrl:mid:secret:) to get the page data. Past it,
+    /// initialize returns a `.timeout` (408) error and the App should not show the widgets.
+    public static let defaultInitializeTimeout: TimeInterval = 3
 
     /**
      * @function getFloatingPositions
@@ -871,6 +880,98 @@ public struct EmbedWidgetClickEvent {
     }
 }
 
+// MARK: - EmbedDeadline
+/**
+ * @enum EmbedDeadline
+ * @description Puts a time limit on an async request. The caller gets URLError(.timedOut) at
+ *              the deadline even if the request ignores cancellation; its late result is dropped.
+ */
+enum EmbedDeadline {
+    /**
+     * @function run
+     * @description Runs operation and returns its result, or throws URLError(.timedOut) once
+     *              seconds pass first. The operation is cancelled when the deadline wins.
+     *
+     * @param {TimeInterval} seconds - Time limit. 0 or less, .infinity, NaN or a value too large
+     *        to sleep for runs operation without a limit.
+     * @param {() async throws -> T} operation - The request to run.
+     *
+     * @returns {T} The operation's result.
+     */
+    static func run<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+        let nanoseconds = seconds * 1_000_000_000
+        // UInt64(_:) traps on infinity and on values past UInt64.max.
+        guard seconds > 0, nanoseconds < Double(UInt64.max) else { return try await operation() }
+        let race = Race<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                race.start(continuation)
+                race.track(Task {
+                    do {
+                        race.finish(.success(try await operation()))
+                    } catch {
+                        race.finish(.failure(error))
+                    }
+                })
+                race.track(Task {
+                    try? await Task.sleep(nanoseconds: UInt64(nanoseconds))
+                    race.finish(.failure(URLError(.timedOut)))
+                })
+            }
+        } onCancel: {
+            race.finish(.failure(CancellationError()))
+        }
+    }
+
+    /// Resumes the caller once with whichever of the request, the timer or a cancellation ends first.
+    private final class Race<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var tasks: [Task<Void, Never>] = []
+        private var isFinished = false
+
+        func start(_ continuation: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if isFinished {
+                // Cancelled before the race started.
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func track(_ task: Task<Void, Never>) {
+            lock.lock()
+            if isFinished {
+                lock.unlock()
+                task.cancel()
+                return
+            }
+            tasks.append(task)
+            lock.unlock()
+        }
+
+        func finish(_ result: Result<T, Error>) {
+            lock.lock()
+            guard !isFinished else {
+                lock.unlock()
+                return
+            }
+            isFinished = true
+            let continuation = self.continuation
+            let pending = tasks
+            self.continuation = nil
+            tasks = []
+            lock.unlock()
+
+            pending.forEach { $0.cancel() }
+            continuation?.resume(with: result)
+        }
+    }
+}
+
 // MARK: - EmbedWidgetDataManager (Shared Data Manager)
 @available(iOS 16.0, *)
 @MainActor
@@ -1046,7 +1147,8 @@ public class EmbedWidgetDataManager: ObservableObject {
         mid: String,
         payloadSecret: String,
         baseURL: String = EmbedAPI.defaultBaseURL,
-        forceRefresh: Bool = false
+        forceRefresh: Bool = false,
+        timeout: TimeInterval = EmbedIOSSDK.defaultInitializeTimeout
     ) async -> EmbedWidgetLoadError? {
         let context = InitContext(
             pageUrl: pageUrl,
@@ -1105,19 +1207,24 @@ public class EmbedWidgetDataManager: ObservableObject {
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize start. pageUrl=\(pageUrl), pageId=\(pageID), mid=\(mid)")
                 // floatingPositions is requested in parallel with pageBundle. Its failure
                 // does not fail initialization; it only means no floating slot is mounted.
+                // Both share the timeout, so a slow floatingPositions cannot hold initialize past it.
                 async let floatingOutcome: Result<[EmbedPosition], Error> = {
                     do {
-                        return .success(try await fetchFloatingPositions(pageUrl, mid, payloadSecret, baseURL))
+                        return .success(try await EmbedDeadline.run(seconds: timeout) {
+                            try await fetchFloatingPositions(pageUrl, mid, payloadSecret, baseURL)
+                        })
                     } catch {
                         return .failure(error)
                     }
                 }()
-                let response = try await fetchPageBundle(
-                    pageUrl,
-                    mid,
-                    payloadSecret,
-                    baseURL
-                )
+                let response = try await EmbedDeadline.run(seconds: timeout) {
+                    try await fetchPageBundle(
+                        pageUrl,
+                        mid,
+                        payloadSecret,
+                        baseURL
+                    )
+                }
                 let floatingPositions = await floatingOutcome
 
                 guard self.activeInitID == initID,
