@@ -431,7 +431,7 @@ SDK 的所有 widget 均渲染於 SDK **內部自行建立**的 `WKWebView`。`W
 | `websiteDataStore` | SDK 內共享的 store：iOS 17+ 為 SDK 專屬的 `WKWebsiteDataStore(forIdentifier:)`，iOS 16 為 `WKWebsiteDataStore.nonPersistent()` | Widget 與 Lightbox 共用 SDK 自有的 store，不會使用 Host App 的預設 cookie jar；跨 App 啟動只保留 HTTP 快取，cookie 等其他資料在每次啟動第一次 `initialize` 時清除 |
 | `customUserAgent` | 未設定 | 使用系統預設 User-Agent，後端不依賴特定 UA |
 
-SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），也未實作 `WKUIDelegate`，因此 widget 的 WebView 無法開啟任何新視窗——widget 不使用 `window.open`，所有導頁行為都經 JS bridge 交由 Host App 處理（見下方）。
+SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），WebView 內不會開啟新視窗。SDK 實作 `WKUIDelegate` 與 `WKNavigationDelegate`：widget 與 Lightbox 內以 `window.open` 或連結開啟的網址（例如 Lightbox 內的商品卡片），只要不是 `embed.tagnology.co`，一律交給系統開啟（瀏覽器或對應 App），不在 SDK 的 WebView 內換頁，也不經過 Host App（1.0.14 起）。
 
 另外，widget 的 WebView 會設定 `scrollView.isScrollEnabled = false`（高度由內容自動回報，不需內部捲動）、`isOpaque = false` 與透明背景（與 Host 頁面融合）。
 
@@ -442,13 +442,13 @@ SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `fal
 | Handler | 方向 | 用途 |
 |---|---|---|
 | `tagnologyResize` | JS → Native | widget 內容高度變化時回報，原生端據此調整版位高度 |
-| `tagnologyEvent` | JS → Native | 傳遞 widget 事件（點擊等）。點擊事件經 `EmbedWidgetView(onClick:)` callback 交由 Host App 決定導頁方式 |
+| `tagnologyEvent` | JS → Native | 傳遞 widget 事件（點擊等）。點擊時 SDK 先呼叫 `EmbedWidgetView(onClick:)` 通知 Host App（僅供追蹤，見〈Widget Click Callback〉），再開啟 Lightbox；`onClick` 不影響後續動作 |
 
 Bridge 僅接收 SDK 自家 widget 頁面（載入自 `https://embed.tagnology.co`）發出的訊息，Host App 無需（也不應）另行註冊或呼叫。
 
 ### Lightbox
 
-點擊 widget 內容時，SDK 以原生 `fullScreenCover` 開啟 Lightbox（另一個 SDK 內部的 `WKWebView`，載入 `https://embed.tagnology.co/lightBox`），**不使用** `window.open` 或系統瀏覽器。Lightbox 的 WebView 設定與上表相同（同樣允許 JS 與影音自動播放），關閉後即釋放。
+點擊 widget 內容時，SDK 以原生 `fullScreenCover` 顯示 Lightbox（另一個 SDK 內部的 `WKWebView`，載入 `https://embed.tagnology.co/lightBox`）。Lightbox 在版位出現時即預先載入，同一頁的所有版位共用，關閉後保留供下次點擊使用（1.0.14 起）。內容顯示前右上角一律有關閉按鈕；點擊後 10 秒仍未顯示內容就停止轉圈、只留關閉按鈕，關閉後 Lightbox 頁面會重新載入（1.0.15 起）。Lightbox 的 WebView 設定與上表相同（同樣允許 JS 與影音自動播放）。使用者在 Lightbox 內點商品卡片時，商品網址交由系統開啟（見上方 `WKUIDelegate` 說明）。
 
 ### Mixed Content
 
@@ -487,7 +487,7 @@ Notes:
 
 ### Widget Click Callback (`onClick`)
 
-`EmbedWidgetView` supports click callback so app can send its own analytics:
+`EmbedWidgetView` supports click callback so app can send its own analytics. The callback is notification-only: it returns nothing, so it can't stop or replace the Lightbox, which the SDK opens right after it.
 
 ```swift
 EmbedWidgetView(
