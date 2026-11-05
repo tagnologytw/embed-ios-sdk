@@ -28,6 +28,11 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
   - `timeout` 傳 `0`、負數或 `.infinity` 代表不限時（舊行為）。逾時的頁面不會寫入快取，下次 `initialize` 會重新請求。
   - 只限制取得資料的時間；版位內容的網頁載入與繪製不在此限。
 - Lightbox 載入中也能關閉：內容顯示前右上角一律顯示關閉按鈕（原本只在頁面載入失敗時才有），內容顯示後改用頁面自己的關閉鈕。點擊後 10 秒內頁面仍未顯示內容（未回 `toggleLB open=true`）就停止轉圈、只留關閉按鈕，關閉後 Lightbox 頁面會重新載入（91APP 回報頁面沒回應時只能一直轉圈、無法關閉）。
+- iOS 17 以上，SDK 的 WebView 改為跨 App 啟動保留 HTTP 快取：版位與 Lightbox 網頁的 JS、CSS 不必每次開 App 都重新下載（91APP 回報 `initialize` 後版位還要約 3.8 秒才出現）。模擬行動網路量測，重新啟動 App 後 `initialize` 完成到版位回報高度由約 5.6 秒降到約 0.6 秒。
+  - 仍使用 SDK 專屬的 data store，不與 Host App 共用 cookie。
+  - 每次啟動第一次 `initialize` 時清除前次啟動留下的 cookie、localStorage 等資料，只保留 HTTP 快取，與 1.0.11 起「cookie 不跨啟動保存」相同。
+  - 網頁 HTML 依伺服器的快取設定（目前 10 分鐘）重新取得，網頁更新最晚 10 分鐘後生效。
+  - iOS 16 沒有可指定的 data store，維持只存在記憶體。
 
 ### 1.0.14
 
@@ -420,7 +425,7 @@ SDK 的所有 widget 均渲染於 SDK **內部自行建立**的 `WKWebView`。`W
 | `defaultWebpagePreferences.allowsContentJavaScript` | `true` | widget 本體為 JavaScript，必要設定（iOS 14+ API，取代已棄用的 `javaScriptEnabled`） |
 | `allowsInlineMediaPlayback` | `true` | FloatingMedia 影音自動播放所必需 |
 | `mediaTypesRequiringUserActionForPlayback` | `[]`（空集合） | 允許影音不經使用者手勢即自動播放，FloatingMedia 所必需 |
-| `websiteDataStore` | SDK 內共享的 `WKWebsiteDataStore.nonPersistent()` | Widget 與 Lightbox 共用 SDK 自有的記憶體型 store，不會使用 Host App 的預設 cookie jar，資料亦不會寫入磁碟 |
+| `websiteDataStore` | SDK 內共享的 store：iOS 17+ 為 SDK 專屬的 `WKWebsiteDataStore(forIdentifier:)`，iOS 16 為 `WKWebsiteDataStore.nonPersistent()` | Widget 與 Lightbox 共用 SDK 自有的 store，不會使用 Host App 的預設 cookie jar；跨 App 啟動只保留 HTTP 快取，cookie 等其他資料在每次啟動第一次 `initialize` 時清除 |
 | `customUserAgent` | 未設定 | 使用系統預設 User-Agent，後端不依賴特定 UA |
 
 SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），也未實作 `WKUIDelegate`，因此 widget 的 WebView 無法開啟任何新視窗——widget 不使用 `window.open`，所有導頁行為都經 JS bridge 交由 Host App 處理（見下方）。
@@ -449,8 +454,8 @@ widget HTML 與所有資源（JS / CSS / 影音）均由 `https://embed.tagnolog
 ### Cookie / User-Agent 政策
 
 - SDK 不讀取、不依賴 Host 站台或 Host App 的任何 cookie；widget 所需資料均經 `/widget/pageBundle` API 以加密 payload 取得。
-- SDK 內的 Widget 與 Lightbox WebView 共用一個獨立的 `WKWebsiteDataStore.nonPersistent()`；Host App 同步到預設 store 的登入 cookie 不會進入 SDK WebView，Host App 清除預設 store 時也不會清除 SDK 的 store。
-- SDK WebView 的 cookie 與其他網站資料只存在記憶體中，不會跨 App 啟動保留。
+- SDK 內的 Widget 與 Lightbox WebView 共用一個 SDK 專屬的 store（iOS 17+ 為 `WKWebsiteDataStore(forIdentifier:)`，iOS 16 為 `WKWebsiteDataStore.nonPersistent()`）；Host App 同步到預設 store 的登入 cookie 不會進入 SDK WebView，Host App 清除預設 store 時也不會清除 SDK 的 store。
+- SDK WebView 的 cookie、localStorage 等網站資料不會跨 App 啟動保留：每次啟動第一次 `initialize` 時清除前次留下的資料，只保留 HTTP 快取（網頁的 JS、CSS），讓版位不必每次開 App 都重新下載。
 - 未設定 `customUserAgent`，一律使用系統預設 UA。
 
 ### Host App 需要注意的唯一事項

@@ -29,6 +29,6 @@ final class EmbedLightboxSessionTests: XCTestCase {
 
         XCTAssertNil(session.webView.superview)
         XCTAssertTrue(session.webView.isLoading)
-        XCTAssertFalse(session.webView.configuration.websiteDataStore.isPersistent)
+        XCTAssertTrue(session.webView.configuration.websiteDataStore === EmbedWebViewConfigurationFactory.websiteDataStore)
     }
 }
