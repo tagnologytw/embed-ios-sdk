@@ -1721,6 +1721,8 @@ public struct EmbedView: View {
     // 當 widget property position == fixed 時切換為 true，整個 WebView 會變成 fullscreen fixed
     @State private var isFullscreenFixed = false
     @State private var lightboxLoadFailed = false
+    // 每次開啟 Lightbox 換一個 token，逾時檢查只對當次開啟有效
+    @State private var lightboxOpenToken = UUID()
     @State private var hasTrackedVisibility = false
     @State private var visibilityProbeTick = 0
 
@@ -1792,14 +1794,14 @@ public struct EmbedView: View {
                     LightboxWebView(session: lightboxSession)
                 }
 
-                if !isLightboxContentShown && !lightboxLoadFailed {
+                if EmbedLightboxLoading.showsSpinner(contentShown: isLightboxContentShown, loadFailed: lightboxLoadFailed) {
                     ProgressView()
                         .tint(.white)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
-                // 只在載入失敗時顯示關閉按鈕
-                if lightboxLoadFailed {
+                // 內容顯示前（載入中、逾時或失敗）由 SDK 提供關閉按鈕；內容顯示後改用頁面自己的關閉鈕
+                if EmbedLightboxLoading.showsCloseButton(contentShown: isLightboxContentShown, loadFailed: lightboxLoadFailed) {
                     VStack {
                         HStack {
                             Spacer()
@@ -1815,6 +1817,7 @@ public struct EmbedView: View {
                                             .frame(width: 36, height: 36)
                                     )
                             }
+                            .accessibilityLabel("關閉")
                             .padding(.top, 8)
                             .padding(.trailing, 16)
                         }
@@ -1945,6 +1948,24 @@ public struct EmbedView: View {
         session.send(messageJSON)
         lightboxLoadFailed = session.loadFailed
         handleLightboxToggle(true)
+        scheduleLightboxLoadingTimeout()
+    }
+
+    // 頁面在時限內沒回 toggleLB open=true 就停止轉圈、改顯示關閉鈕，避免使用者卡在載入畫面。
+    // 關閉後 handleLightboxDismiss 會重載頁面，下次點擊重新開始。
+    private func scheduleLightboxLoadingTimeout() {
+        let token = UUID()
+        lightboxOpenToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + EmbedLightboxLoading.timeout) {
+            guard self.lightboxOpenToken == token,
+                  EmbedLightboxLoading.hasTimedOut(
+                      isPresented: self.isLightboxPresented,
+                      contentShown: self.isLightboxContentShown,
+                      loadFailed: self.lightboxLoadFailed
+                  ) else { return }
+            EmbedLogger.log("[EmbedView] lightbox no response within \(EmbedLightboxLoading.timeout)s folderId=\(self.folderInfo.folderId)")
+            self.lightboxLoadFailed = true
+        }
     }
 
     private func handleLightboxToggle(_ shouldOpen: Bool) {
@@ -2299,6 +2320,29 @@ struct EmbedWebView: UIViewRepresentable {
                 }
             }
         }
+    }
+}
+
+// MARK: - EmbedLightboxLoading
+/**
+ * @enum EmbedLightboxLoading
+ * @description What the Lightbox cover shows before the page shows its content. The page has its
+ *              own close button only once its content is shown, so until then the SDK provides one.
+ */
+enum EmbedLightboxLoading {
+    /// Seconds to wait for the page to show content (toggleLB open=true) after a click.
+    static let timeout: TimeInterval = 10
+
+    static func showsSpinner(contentShown: Bool, loadFailed: Bool) -> Bool {
+        !contentShown && !loadFailed
+    }
+
+    static func showsCloseButton(contentShown: Bool, loadFailed: Bool) -> Bool {
+        !contentShown || loadFailed
+    }
+
+    static func hasTimedOut(isPresented: Bool, contentShown: Bool, loadFailed: Bool) -> Bool {
+        isPresented && !contentShown && !loadFailed
     }
 }
 
