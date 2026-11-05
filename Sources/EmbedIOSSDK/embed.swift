@@ -1202,6 +1202,11 @@ public class EmbedWidgetDataManager: ObservableObject {
         let fetchPageBundle = pageBundleFetcher
         let fetchFloatingPositions = floatingPositionsFetcher
         let task = Task<EmbedWidgetLoadError?, Never> { @MainActor in
+            // Clears the previous launch's cookies and storage alongside the requests,
+            // so it is done before initialize returns and any widget loads.
+            let websiteDataReady = Task { @MainActor in
+                await EmbedWebViewConfigurationFactory.prepareWebsiteData()
+            }
             do {
                 let pageID = EmbedAPI.extractPageIdFromPageUrl(pageUrl) ?? "nil"
                 EmbedLogger.log("[EmbedWidgetDataManager] initialize start. pageUrl=\(pageUrl), pageId=\(pageID), mid=\(mid)")
@@ -1226,6 +1231,7 @@ public class EmbedWidgetDataManager: ObservableObject {
                     )
                 }
                 let floatingPositions = await floatingOutcome
+                await websiteDataReady.value
 
                 guard self.activeInitID == initID,
                       self.currentContext == context else {
@@ -2155,10 +2161,49 @@ enum EmbedLinkOpener {
 // MARK: - SDK WebView Configuration
 @MainActor
 enum EmbedWebViewConfigurationFactory {
-    /// Keep SDK cookies and other website data in memory, isolated from the
-    /// Host App's persistent default data store. Reusing this store lets the
-    /// widget and Lightbox share SDK-owned session state while the app runs.
-    static let websiteDataStore = WKWebsiteDataStore.nonPersistent()
+    /// SDK-owned store, isolated from the Host App's default data store. The widget and
+    /// Lightbox share it, so they share SDK-owned session state while the app runs.
+    ///
+    /// iOS 17+ uses a persistent store with a fixed SDK identifier so the HTTP disk cache
+    /// (the page's versioned JS/CSS) survives app launches; without it every launch
+    /// downloads the whole widget page again. Everything else (cookies, storage) is
+    /// removed at launch by prepareWebsiteData(), so like before nothing but the cache
+    /// is kept across launches. iOS 16 has no identifier stores and stays in memory.
+    static let websiteDataStore: WKWebsiteDataStore = {
+        if #available(iOS 17.0, *) {
+            return WKWebsiteDataStore(forIdentifier: persistentStoreIdentifier)
+        }
+        return WKWebsiteDataStore.nonPersistent()
+    }()
+
+    static let persistentStoreIdentifier = UUID(uuidString: "7A6E0B0C-5C1B-4E59-9D2B-3F1C0E8A9B21")!
+
+    /// The only website data kept across launches.
+    static let dataTypesKeptAcrossLaunches: Set<String> = [WKWebsiteDataTypeDiskCache]
+
+    private static var preparation: Task<Void, Never>?
+
+    /// Removes the website data left by earlier launches, except the HTTP disk cache.
+    /// Runs once per launch; initialize awaits it so it finishes before any widget loads.
+    static func prepareWebsiteData() async {
+        let task: Task<Void, Never>
+        if let preparation {
+            task = preparation
+        } else {
+            let store = websiteDataStore
+            task = Task { @MainActor in
+                guard store.isPersistent else { return }
+                let types = WKWebsiteDataStore.allWebsiteDataTypes().subtracting(dataTypesKeptAcrossLaunches)
+                await store.removeData(ofTypes: types, modifiedSince: .distantPast)
+            }
+            preparation = task
+        }
+        await task.value
+    }
+
+    static func resetPreparationForTests() {
+        preparation = nil
+    }
 
     static func make() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
