@@ -22,6 +22,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ### 1.0.15
 
+- 只透過 Swift Package Manager 發佈：CocoaPods 已淘汰，CocoaPods 上最後可用的版本是 1.0.14。
 - `initialize` 新增讀取時間上限 `timeout`（預設 `EmbedIOSSDK.defaultInitializeTimeout` = 3 秒）：超過時間仍未取得頁面資料就回傳 `408` 逾時錯誤，App 不顯示版位即可（91APP 要求比照 App 內其他版位，API 超過 3 秒不顯示）。
   - 計時從呼叫 `initialize` 開始；即使連線卡住不回應，`initialize` 也會在時限到時回傳。
   - 同時發出的浮窗版位請求共用同一個時限，逾時只會讓 `getFloatingPositions()` 回傳 `[]`，不會拖慢 `initialize`。
@@ -100,12 +101,14 @@ Then import the module where needed:
 import EmbedIOSSDK
 ```
 
-### CocoaPods
+### CocoaPods（已淘汰）
 
-Add the following to your `Podfile`:
+CocoaPods 已淘汰：CocoaPods Trunk 已停止接受新版本，EmbedIOSSDK 在 CocoaPods 上最後可用的版本是 1.0.14。1.0.15 起只透過 Swift Package Manager 發佈，請改用上方的 SPM 安裝方式。
+
+仍在使用 CocoaPods 的專案只能停留在 1.0.14：
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.15'
+pod 'EmbedIOSSDK', '1.0.14'
 ```
 
 Then run:
