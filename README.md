@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### 未發布
+### 1.0.15
 
 - `initialize` 新增讀取時間上限 `timeout`（預設 `EmbedIOSSDK.defaultInitializeTimeout` = 3 秒）：超過時間仍未取得頁面資料就回傳 `408` 逾時錯誤，App 不顯示版位即可（91APP 要求比照 App 內其他版位，API 超過 3 秒不顯示）。
   - 計時從呼叫 `initialize` 開始；即使連線卡住不回應，`initialize` 也會在時限到時回傳。
@@ -90,7 +90,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.14")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.15")
 ]
 ```
 
@@ -105,7 +105,7 @@ import EmbedIOSSDK
 Add the following to your `Podfile`:
 
 ```ruby
-pod 'EmbedIOSSDK', '~> 1.0.14'
+pod 'EmbedIOSSDK', '~> 1.0.15'
 ```
 
 Then run:
