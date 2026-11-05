@@ -27,6 +27,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
   - 同時發出的浮窗版位請求共用同一個時限，逾時只會讓 `getFloatingPositions()` 回傳 `[]`，不會拖慢 `initialize`。
   - `timeout` 傳 `0`、負數或 `.infinity` 代表不限時（舊行為）。逾時的頁面不會寫入快取，下次 `initialize` 會重新請求。
   - 只限制取得資料的時間；版位內容的網頁載入與繪製不在此限。
+- Lightbox 載入中也能關閉：內容顯示前右上角一律顯示關閉按鈕（原本只在頁面載入失敗時才有），內容顯示後改用頁面自己的關閉鈕。點擊後 10 秒內頁面仍未顯示內容（未回 `toggleLB open=true`）就停止轉圈、只留關閉按鈕，關閉後 Lightbox 頁面會重新載入（91APP 回報頁面沒回應時只能一直轉圈、無法關閉）。
 
 ### 1.0.14
 
