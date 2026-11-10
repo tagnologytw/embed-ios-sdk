@@ -1604,6 +1604,21 @@ public struct EmbedWidgetView: View {
         guard !Task.isCancelled else { return }
         let identity = loadIdentity
 
+        // .task 在 view 消失時取消、再出現時重跑（例如進商品頁再返回分類頁）。
+        // 同一頁已載入完成就保留原本的版位，不重建 WebView，避免返回時重新載入、高度從頭變化造成頁面跳動。
+        let keepsLoadedWidgets = await MainActor.run {
+            EmbedWidgetReload.keepsLoadedWidgets(
+                sameIdentity: self.activeLoadIdentity == identity,
+                isLoading: self.isLoading,
+                hasError: self.errorMessage != nil,
+                widgetCount: self.folderInfos.count
+            )
+        }
+        if keepsLoadedWidgets {
+            EmbedLogger.log("[EmbedWidgetView] reappeared on the same page, keeping loaded widgets - position: \(position.rawValue)")
+            return
+        }
+
         await MainActor.run {
             self.activeLoadIdentity = identity
             self.folderInfos = []
@@ -1706,6 +1721,21 @@ public struct EmbedWidgetView: View {
             self.isLoading = false
             self.initRetryCount = 0
         }
+    }
+}
+
+/**
+ * @enum EmbedWidgetReload
+ * @description Whether EmbedWidgetView keeps what it shows when its load task runs again.
+ *              SwiftUI cancels `.task` when the view disappears and restarts it when the view
+ *              appears again, so going to another page and back used to clear the widgets and
+ *              rebuild their WebViews: the widget showed loading again and its height grew from
+ *              scratch, moving everything below it. A finished load for the same page and
+ *              position is kept; a load that was cancelled or failed runs again.
+ */
+enum EmbedWidgetReload {
+    static func keepsLoadedWidgets(sameIdentity: Bool, isLoading: Bool, hasError: Bool, widgetCount: Int) -> Bool {
+        sameIdentity && !isLoading && !hasError && widgetCount > 0
     }
 }
 
