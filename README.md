@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### 未發布
+### 1.0.16
 
 - 返回同一頁時保留版位：從分類頁進商品頁再返回，版位維持離開前的內容與高度，不再重新載入（91APP 回報返回後版位重新顯示載入中，高度 132pt → 265pt → 449pt 從頭變化，下方廣告與商品列表跟著跳動）。
   - SwiftUI 會在 view 消失時取消、再出現時重跑 `EmbedWidgetView` 的載入工作；同一頁、同一版位已載入完成時改為直接沿用，不重建 WebView。
@@ -98,7 +98,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.15")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.16")
 ]
 ```
 
