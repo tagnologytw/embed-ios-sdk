@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### 1.0.17（未發版）
+### 1.0.17
 
 - 新增 `EmbedIOSSDK.setLinkHandler(_:)`：使用者點擊版位或 Lightbox 內的商品卡等連結時，SDK 先把完整網址交給 App，App 回傳 `true` 代表已自行開啟（例如轉成 App 內的原生商品頁），SDK 就不開外部瀏覽器（91APP 回報商品在瀏覽器開啟後，收藏、加入購物車、登入狀態與 App 不同步）。
   - App 回傳 `true` 時，若 Lightbox 正開著，SDK 會自動關閉 Lightbox（重新載入讓影片停止），App 的原生頁不會被 Lightbox 蓋住。
@@ -106,7 +106,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.16")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.17")
 ]
 ```
 
