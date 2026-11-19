@@ -20,6 +20,14 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
+### 1.0.17（未發版）
+
+- 新增 `EmbedIOSSDK.setLinkHandler(_:)`：使用者點擊版位或 Lightbox 內的商品卡等連結時，SDK 先把完整網址交給 App，App 回傳 `true` 代表已自行開啟（例如轉成 App 內的原生商品頁），SDK 就不開外部瀏覽器（91APP 回報商品在瀏覽器開啟後，收藏、加入購物車、登入狀態與 App 不同步）。
+  - App 回傳 `true` 時，若 Lightbox 正開著，SDK 會自動關閉 Lightbox（重新載入讓影片停止），App 的原生頁不會被 Lightbox 蓋住。
+  - App 回傳 `false`，或未設定 handler：維持原本行為，交給系統開啟（瀏覽器或對應 App）。未呼叫 `setLinkHandler` 的整合不受影響。
+  - 只有離開 `embed.tagnology.co` 的連結會交給 handler；版位與 Lightbox 自身的頁面不會。
+  - 與 Android SDK v1.0.8 的 `EmbedAndroidSDK.setLinkHandler` 行為相同。
+
 ### 1.0.16
 
 - 返回同一頁時保留版位：從分類頁進商品頁再返回，版位維持離開前的內容與高度，不再重新載入（91APP 回報返回後版位重新顯示載入中，高度 132pt → 265pt → 449pt 從頭變化，下方廣告與商品列表跟著跳動）。
@@ -196,6 +204,33 @@ struct ContentView: View {
     }
 }
 ```
+
+### Open Links in the App (`setLinkHandler`)
+
+使用者點擊版位或 Lightbox 內的商品卡（或其他離開 `embed.tagnology.co` 的連結）時，預設由系統開啟（Safari 或對應 App）。App 若想改開自己的原生頁（例如商品頁），在 App 啟動時設定一次 link handler：
+
+```swift
+// 例如在 App 啟動時（AppDelegate / App init）設定一次，整個 App 共用
+EmbedIOSSDK.setLinkHandler { url in
+    // url 為完整網址，例如 https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology
+    // App 能以原生頁開啟就導過去並回傳 true；否則回傳 false
+    return AppNavigator.open(url)
+}
+```
+
+| handler 回傳 | SDK 行為 |
+|---|---|
+| `true` | 不開外部瀏覽器；若 Lightbox 正開著，SDK 會自動關閉（並重新載入讓影片停止），App 的原生頁不會被蓋住 |
+| `false` | 與未設定相同，交給系統開啟（瀏覽器或對應 App） |
+| 未設定 / `setLinkHandler(nil)` | 全部交給系統開啟（1.0.16 以前的行為） |
+
+注意事項：
+
+- handler 在主執行緒同步呼叫，請只做判斷並開始導頁，不要在裡面做耗時工作。
+- 網址原封不動傳入（含 `utm_*` 等 query），解析方式由 App 決定；SDK 不針對特定電商平台判斷。
+- 只有離開 `embed.tagnology.co` 的連結會交給 handler（商品頁、Instagram、`tel:`、`mailto:`、`line:` 等），版位與 Lightbox 自身的頁面不會。
+- Lightbox 是以 `fullScreenCover` 顯示，回傳 `true` 後 SDK 才開始關閉它。App 以 push 方式導頁沒有問題；若 App 是以 modal（`present`）開原生頁，請等 Lightbox 關閉後再 present（例如延遲約 0.5 秒），否則 UIKit 會因為已有 modal 而不顯示。
+- 點擊成效追蹤由版位網頁在開啟連結前送出，不受 handler 影響。
 
 ### Debug Logging
 
@@ -438,7 +473,7 @@ SDK 的所有 widget 均渲染於 SDK **內部自行建立**的 `WKWebView`。`W
 | `websiteDataStore` | SDK 內共享的 store：iOS 17+ 為 SDK 專屬的 `WKWebsiteDataStore(forIdentifier:)`，iOS 16 為 `WKWebsiteDataStore.nonPersistent()` | Widget 與 Lightbox 共用 SDK 自有的 store，不會使用 Host App 的預設 cookie jar；跨 App 啟動只保留 HTTP 快取，cookie 等其他資料在每次啟動第一次 `initialize` 時清除 |
 | `customUserAgent` | 未設定 | 使用系統預設 User-Agent，後端不依賴特定 UA |
 
-SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），WebView 內不會開啟新視窗。SDK 實作 `WKUIDelegate` 與 `WKNavigationDelegate`：widget 與 Lightbox 內以 `window.open` 或連結開啟的網址（例如 Lightbox 內的商品卡片），只要不是 `embed.tagnology.co`，一律交給系統開啟（瀏覽器或對應 App），不在 SDK 的 WebView 內換頁，也不經過 Host App（1.0.14 起）。
+SDK **未設定** `javaScriptCanOpenWindowsAutomatically`（即維持預設 `false`），WebView 內不會開啟新視窗。SDK 實作 `WKUIDelegate` 與 `WKNavigationDelegate`：widget 與 Lightbox 內以 `window.open` 或連結開啟的網址（例如 Lightbox 內的商品卡片），只要不是 `embed.tagnology.co`，不在 SDK 的 WebView 內換頁，交給系統開啟（瀏覽器或對應 App，1.0.14 起）；App 若以 `EmbedIOSSDK.setLinkHandler(_:)` 設定 link handler，會先交給 App 決定是否自行開啟（1.0.17 起，見〈Open Links in the App〉）。
 
 另外，widget 的 WebView 會設定 `scrollView.isScrollEnabled = false`（高度由內容自動回報，不需內部捲動）、`isOpaque = false` 與透明背景（與 Host 頁面融合）。
 
@@ -455,7 +490,7 @@ Bridge 僅接收 SDK 自家 widget 頁面（載入自 `https://embed.tagnology.c
 
 ### Lightbox
 
-點擊 widget 內容時，SDK 以原生 `fullScreenCover` 顯示 Lightbox（另一個 SDK 內部的 `WKWebView`，載入 `https://embed.tagnology.co/lightBox`）。Lightbox 在版位出現時即預先載入，同一頁的所有版位共用，關閉後保留供下次點擊使用（1.0.14 起）。內容顯示前右上角一律有關閉按鈕；點擊後 10 秒仍未顯示內容就停止轉圈、只留關閉按鈕，關閉後 Lightbox 頁面會重新載入（1.0.15 起）。Lightbox 的 WebView 設定與上表相同（同樣允許 JS 與影音自動播放）。使用者在 Lightbox 內點商品卡片時，商品網址交由系統開啟（見上方 `WKUIDelegate` 說明）。
+點擊 widget 內容時，SDK 以原生 `fullScreenCover` 顯示 Lightbox（另一個 SDK 內部的 `WKWebView`，載入 `https://embed.tagnology.co/lightBox`）。Lightbox 在版位出現時即預先載入，同一頁的所有版位共用，關閉後保留供下次點擊使用（1.0.14 起）。內容顯示前右上角一律有關閉按鈕；點擊後 10 秒仍未顯示內容就停止轉圈、只留關閉按鈕，關閉後 Lightbox 頁面會重新載入（1.0.15 起）。Lightbox 的 WebView 設定與上表相同（同樣允許 JS 與影音自動播放）。使用者在 Lightbox 內點商品卡片時，商品網址先交給 App 的 link handler（有設定時），未處理再交由系統開啟；App 處理後 SDK 會關閉 Lightbox（見〈Open Links in the App〉）。
 
 ### Mixed Content
 

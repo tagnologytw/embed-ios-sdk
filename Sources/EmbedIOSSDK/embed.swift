@@ -350,6 +350,27 @@ public enum EmbedIOSSDK {
     }
 
     /**
+     * @function setLinkHandler
+     * @description Lets the Host App open links tapped in widgets and the Lightbox (for example
+     *              product cards) itself, such as a native product page instead of the browser.
+     *              The handler runs on the main thread with the link's full URL (for example
+     *              `https://{shop}/SalePage/Index/{id}?utm_source=...`), for every link that
+     *              leaves embed.tagnology.co.
+     *              - Return true: the App opened the link. The SDK does not open the browser, and
+     *                closes the Lightbox if it is showing, so the App's page is not covered by it.
+     *              - Return false: the SDK opens the link with the system as before (browser or
+     *                an app that claims the link).
+     *              Not set (default) or nil: every link opens with the system.
+     *              Return quickly; the handler should only decide and start the navigation.
+     *
+     * @param {((URL) -> Bool)?} handler - Returns true when the App opened the URL; nil removes the handler.
+     */
+    @MainActor
+    public static func setLinkHandler(_ handler: ((URL) -> Bool)?) {
+        EmbedLinkOpener.appHandler = handler
+    }
+
+    /**
      * @function initialize
      * @description Initializes embed data for the current page. This must be called once
      *              before rendering EmbedWidgetView(position:pageUrl:).
@@ -1978,6 +1999,9 @@ public struct EmbedView: View {
         }
         session.onEvent = handleEmbedEvent
         session.onLoadFailed = { lightboxLoadFailed = true }
+        // App 已用原生頁開啟商品連結：關閉 Lightbox，否則原生頁會被 fullScreenCover 蓋住。
+        // 非頁面自行關閉，handleLightboxDismiss 會重載 Lightbox 讓影片停止播放。
+        session.onLinkHandledByApp = { handleLightboxToggle(false) }
         isLightboxContentShown = false
         lightboxClosedByPage = false
         // send() 會重新載入先前載入失敗的頁面
@@ -2017,6 +2041,7 @@ public struct EmbedView: View {
     private func handleLightboxDismiss() {
         lightboxSession?.onEvent = nil
         lightboxSession?.onLoadFailed = nil
+        lightboxSession?.onLinkHandledByApp = nil
         if !lightboxClosedByPage {
             lightboxSession?.reset()
         }
@@ -2178,13 +2203,42 @@ enum EmbedLinkOpener {
         return !embedHosts.contains(host)
     }
 
-    /// Returns true when the navigation was handed to the system and must not load in the web view.
+    /// Set by EmbedIOSSDK.setLinkHandler(_:). Returns true when the Host App opened the link itself.
     @MainActor
-    static func openIfExternal(_ navigationAction: WKNavigationAction) -> Bool {
-        guard let url = navigationAction.request.url, shouldOpenExternally(url) else { return false }
+    static var appHandler: ((URL) -> Bool)?
+
+    /// Where an external link went.
+    enum Outcome: Equatable {
+        /// Not an external link; it may load in the web view.
+        case notExternal
+        /// The Host App's link handler opened it (for example as a native product page).
+        case handledByApp
+        /// Handed to the system, which opens the browser or an app that claims the link.
+        case openedBySystem
+    }
+
+    /// Asks the Host App's link handler first, then falls back to the system.
+    @MainActor
+    static func open(_ url: URL?, systemOpen: ((URL) -> Void)? = nil) -> Outcome {
+        guard let url, shouldOpenExternally(url) else { return .notExternal }
+        if let appHandler, appHandler(url) {
+            EmbedLogger.log("[EmbedLinkOpener] handled by app url=\(url.absoluteString)")
+            return .handledByApp
+        }
         EmbedLogger.log("[EmbedLinkOpener] open url=\(url.absoluteString)")
-        UIApplication.shared.open(url)
-        return true
+        if let systemOpen {
+            systemOpen(url)
+        } else {
+            UIApplication.shared.open(url)
+        }
+        return .openedBySystem
+    }
+
+    /// Opens the navigation's URL if it is external. The caller must not load it in the web view
+    /// unless the outcome is `.notExternal`.
+    @MainActor
+    static func openIfExternal(_ navigationAction: WKNavigationAction) -> Outcome {
+        open(navigationAction.request.url)
     }
 }
 
@@ -2354,14 +2408,15 @@ struct EmbedWebView: UIViewRepresentable {
             }
         }
 
-        // window.open（商品連結）交給系統開啟
+        // window.open（商品連結）先交給 Host App 的 link handler，未處理再交給系統開啟
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             _ = EmbedLinkOpener.openIfExternal(navigationAction)
             return nil
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if navigationAction.navigationType == .linkActivated, EmbedLinkOpener.openIfExternal(navigationAction) {
+            if navigationAction.navigationType == .linkActivated,
+               EmbedLinkOpener.openIfExternal(navigationAction) != .notExternal {
                 decisionHandler(.cancel)
                 return
             }
@@ -2438,6 +2493,9 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// Lightbox events go to the EmbedView that is currently presenting the Lightbox.
     var onEvent: ((EmbedWebView.EmbedEvent) -> Void)?
     var onLoadFailed: (() -> Void)?
+    /// Called when the Host App's link handler opened a link tapped in the Lightbox, so the
+    /// presenting EmbedView closes the Lightbox and the App's native page is visible.
+    var onLinkHandledByApp: (() -> Void)?
     private(set) var loadFailed = false
 
     private let url: URL
@@ -2608,19 +2666,29 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         load()
     }
 
-    // Product links use window.open; hand them to the system instead of dropping them.
+    // Product links use window.open; hand them to the Host App or the system instead of dropping them.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        _ = EmbedLinkOpener.openIfExternal(navigationAction)
+        handleLinkOutcome(EmbedLinkOpener.openIfExternal(navigationAction))
         return nil
     }
 
     // A tapped link must not replace the reused Lightbox page.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if navigationAction.navigationType == .linkActivated, EmbedLinkOpener.openIfExternal(navigationAction) {
-            decisionHandler(.cancel)
-            return
+        if navigationAction.navigationType == .linkActivated {
+            let outcome = EmbedLinkOpener.openIfExternal(navigationAction)
+            if outcome != .notExternal {
+                handleLinkOutcome(outcome)
+                decisionHandler(.cancel)
+                return
+            }
         }
         decisionHandler(.allow)
+    }
+
+    // The Lightbox is a full-screen cover; a native page the Host App opened would sit under it.
+    private func handleLinkOutcome(_ outcome: EmbedLinkOpener.Outcome) {
+        guard outcome == .handledByApp else { return }
+        onLinkHandledByApp?()
     }
 }
 
