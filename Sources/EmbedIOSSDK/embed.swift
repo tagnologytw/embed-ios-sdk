@@ -447,6 +447,29 @@ public enum EmbedIOSSDK {
 public enum EmbedAPI {
     public static let defaultBaseURL = "https://embed.tagnology.co/api"
 
+    /// errorCode the server returns (HTTP 403) when the merchant has not been granted
+    /// App SDK access in the Tagnology admin. The App should not show any widget.
+    public static let appSdkDisabledErrorCode = "APP_SDK_DISABLED"
+
+    /// The server refused the request because the merchant's App SDK access is off.
+    public struct AppSdkDisabledError: LocalizedError {
+        public var errorDescription: String? {
+            "App SDK is not enabled for this merchant (errorCode=\(EmbedAPI.appSdkDisabledErrorCode))."
+        }
+    }
+
+    /// Throws AppSdkDisabledError for 403 + APP_SDK_DISABLED, URLError(.badServerResponse) for other non-2xx.
+    static func validateHTTPResponse(_ http: HTTPURLResponse, data: Data) throws {
+        guard 200..<300 ~= http.statusCode else {
+            if http.statusCode == 403,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               json["errorCode"] as? String == appSdkDisabledErrorCode {
+                throw AppSdkDisabledError()
+            }
+            throw URLError(.badServerResponse)
+        }
+    }
+
     public enum EmbedAPIError: LocalizedError {
         case invalidPageURL
         case invalidPageID
@@ -600,9 +623,7 @@ public enum EmbedAPI {
             throw URLError(.badServerResponse)
         }
 
-        guard 200..<300 ~= http.statusCode else {
-            throw URLError(.badServerResponse)
-        }
+        try validateHTTPResponse(http, data: data)
 
         return try JSONDecoder().decode(PageBundleResponse.self, from: data)
     }
@@ -695,9 +716,7 @@ public enum EmbedAPI {
             throw URLError(.badServerResponse)
         }
 
-        guard 200..<300 ~= http.statusCode else {
-            throw URLError(.badServerResponse)
-        }
+        try validateHTTPResponse(http, data: data)
 
         let decoded = try JSONDecoder().decode(FloatingPositionsResponse.self, from: data)
         return parseFloatingPositions(decoded.positions)
@@ -856,6 +875,7 @@ public struct EmbedWidgetLoadError: Error {
         case noData = 204
         case pageMismatch = 409
         case invalidInitPayload = 422
+        case appSdkDisabled = 403
         case initializing = 425
         case notInitialized = 428
         case timeout = 408
@@ -867,12 +887,22 @@ public struct EmbedWidgetLoadError: Error {
     public let message: String
     public let pageUrl: String
     public let position: EmbedPosition
+    /// Server error code when there is one, e.g. EmbedAPI.appSdkDisabledErrorCode
+    /// ("APP_SDK_DISABLED") with statusCode 403 (.appSdkDisabled).
+    public let errorCode: String?
 
-    public init(statusCode: StatusCode, message: String, pageUrl: String, position: EmbedPosition) {
+    public init(
+        statusCode: StatusCode,
+        message: String,
+        pageUrl: String,
+        position: EmbedPosition,
+        errorCode: String? = nil
+    ) {
         self.statusCode = statusCode.rawValue
         self.message = message
         self.pageUrl = pageUrl
         self.position = position
+        self.errorCode = errorCode
     }
 
     func withPosition(_ newPosition: EmbedPosition) -> EmbedWidgetLoadError {
@@ -880,7 +910,8 @@ public struct EmbedWidgetLoadError: Error {
             statusCode: StatusCode(rawValue: statusCode) ?? .otherError,
             message: message,
             pageUrl: pageUrl,
-            position: newPosition
+            position: newPosition,
+            errorCode: errorCode
         )
     }
 }
@@ -1098,6 +1129,15 @@ public class EmbedWidgetDataManager: ObservableObject {
     }
 
     private func classifyError(_ error: Error, pageUrl: String, position: EmbedPosition) -> EmbedWidgetLoadError {
+        if error is EmbedAPI.AppSdkDisabledError {
+            return EmbedWidgetLoadError(
+                statusCode: .appSdkDisabled,
+                message: "App SDK is not enabled for this merchant. Do not show widgets.",
+                pageUrl: pageUrl,
+                position: position,
+                errorCode: EmbedAPI.appSdkDisabledErrorCode
+            )
+        }
         if let apiError = error as? EmbedAPI.EmbedAPIError {
             switch apiError {
             case .invalidPageID, .invalidPayloadSecret, .invalidPageURL, .encryptionFailed:

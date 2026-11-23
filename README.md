@@ -20,6 +20,15 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
+### 1.0.18（未發版）
+
+- 新增錯誤碼 `APP_SDK_DISABLED`：商家在 Tagnology 後台尚未開通「App SDK」權限（預設關閉）時，`/widget/pageBundle` 與 `/widget/floatingPositions` 回 HTTP 403 + `errorCode: "APP_SDK_DISABLED"`。`initialize` 會回傳 `statusCode = 403`（`EmbedWidgetLoadError.StatusCode.appSdkDisabled`）、`errorCode = EmbedAPI.appSdkDisabledErrorCode` 的錯誤；`EmbedWidgetView` 的 `onError` 與 `getFloatingPositions` 的 `onError` 也會收到同樣的錯誤。App 收到時**不要顯示任何版位、不要重試**。
+  - `EmbedWidgetLoadError` 新增選填欄位 `errorCode: String?`（init 參數預設 nil），既有呼叫端不需改程式。
+  - `StatusCode` 新增 `appSdkDisabled = 403`；若 App 對 `StatusCode` 做窮舉 `switch`，需補上這個 case 或 `default`。
+  - 舊版 SDK（1.0.17 以前）收到同樣回應時回報 `500`，一樣不會顯示版位。
+  - 失敗結果不寫入快取，後台開通後下次 `initialize` 即恢復顯示。
+- 測試：`EmbedAppSdkDisabledTests`。
+
 ### 1.0.17
 
 - 新增 `EmbedIOSSDK.setLinkHandler(_:)`：使用者點擊版位或 Lightbox 內的商品卡等連結時，SDK 先把完整網址交給 App，App 回傳 `true` 代表已自行開啟（例如轉成 App 內的原生商品頁），SDK 就不開外部瀏覽器（91APP 回報商品在瀏覽器開啟後，收藏、加入購物車、登入狀態與 App 不同步）。
@@ -410,14 +419,16 @@ When callback status code is non-`200` (no data or error), `onError` will be tri
     - `422` 初始化參數錯誤（例如 pageUrl 無法取出 ID、secret 格式錯誤）
     - `425` 初始化進行中
     - `428` 尚未初始化（尚未呼叫 `initialize`）
+    - `403` 商家未開通 App SDK（`errorCode == "APP_SDK_DISABLED"`，Tagnology 後台「編輯權限」→ App SDK，預設關閉）
     - `500` 系統錯誤
     - `408` timeout（含 `initialize` 超過 `timeout` 仍未取得資料）
     - `520` 其他錯誤
 - `message`: error message
+- `errorCode`: 伺服器錯誤碼（沒有時為 `nil`）；目前只有 `APP_SDK_DISABLED`（搭配 `403`）
 - `pageUrl`: requested page URL（未傳入 `EmbedWidgetView` 時則為目前初始化頁面）
 - `position`: current widget position
 
-**Behavior:** `204/422/500/408/520` 建議隱藏版位；`409/425/428` 會先等待初始化完成，若重試後仍失敗才透過 `onError` 回傳。
+**Behavior:** `204/403/422/500/408/520` 建議隱藏版位（`403` + `APP_SDK_DISABLED` 代表整個商家未開通，所有版位都不要顯示、不要重試）；`409/425/428` 會先等待初始化完成，若重試後仍失敗才透過 `onError` 回傳。
 
 ### Advanced Usage
 
