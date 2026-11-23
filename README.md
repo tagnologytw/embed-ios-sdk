@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### 1.0.18（未發版）
+### 1.0.18
 
 - 新增錯誤碼 `APP_SDK_DISABLED`：商家在 Tagnology 後台尚未開通「App SDK」權限（預設關閉）時，`/widget/pageBundle` 與 `/widget/floatingPositions` 回 HTTP 403 + `errorCode: "APP_SDK_DISABLED"`。`initialize` 會回傳 `statusCode = 403`（`EmbedWidgetLoadError.StatusCode.appSdkDisabled`）、`errorCode = EmbedAPI.appSdkDisabledErrorCode` 的錯誤；`EmbedWidgetView` 的 `onError` 與 `getFloatingPositions` 的 `onError` 也會收到同樣的錯誤。App 收到時**不要顯示任何版位、不要重試**。
   - `EmbedWidgetLoadError` 新增選填欄位 `errorCode: String?`（init 參數預設 nil），既有呼叫端不需改程式。
@@ -115,7 +115,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.17")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.18")
 ]
 ```
 
