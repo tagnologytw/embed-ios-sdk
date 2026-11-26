@@ -367,6 +367,21 @@ public enum EmbedIOSSDK {
      */
     @MainActor
     public static func setLinkHandler(_ handler: ((URL) -> Bool)?) {
+        EmbedLinkOpener.appHandler = handler.map { handler in { event in handler(event.url) } }
+    }
+
+    /**
+     * @function setLinkClickHandler
+     * @description Same as setLinkHandler(_:), but the handler gets an EmbedLinkClickEvent:
+     *              the tapped link (`url`), the link with the full embed UTM composed by the
+     *              SDK (`trackingUrl`), and the widget it was tapped in (folderId, folderName,
+     *              position, mediaId, pageUrl). Return values work the same as setLinkHandler.
+     *              setLinkHandler and setLinkClickHandler share one slot; the last call wins.
+     *
+     * @param {((EmbedLinkClickEvent) -> Bool)?} handler - Returns true when the App opened the link; nil removes the handler.
+     */
+    @MainActor
+    public static func setLinkClickHandler(_ handler: ((EmbedLinkClickEvent) -> Bool)?) {
         EmbedLinkOpener.appHandler = handler
     }
 
@@ -922,13 +937,306 @@ public struct EmbedWidgetClickEvent {
     public let position: String?
     public let mediaId: String?
     public let url: String?
+    /// The page URL with the same UTM parameters the web script adds when a widget is clicked,
+    /// for example `https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology&utm_id=...`.
+    /// A UTM value the SDK does not have is left empty (for example `utm_content=`).
+    /// nil when `url` is not an http(s) URL.
+    public let trackingUrl: String?
 
-    public init(folderId: String, folderName: String?, position: String?, mediaId: String?, url: String?) {
+    public init(folderId: String, folderName: String?, position: String?, mediaId: String?, url: String?, trackingUrl: String? = nil) {
         self.folderId = folderId
         self.folderName = folderName
         self.position = position
         self.mediaId = mediaId
         self.url = url
+        self.trackingUrl = trackingUrl
+    }
+}
+
+/**
+ * @struct EmbedLinkClickEvent
+ * @description A link tapped in a widget or the Lightbox (for example a product card),
+ *              passed to EmbedIOSSDK.setLinkClickHandler(_:).
+ */
+public struct EmbedLinkClickEvent {
+    /// The link as the page opened it, unchanged (the same URL setLinkHandler receives).
+    public let url: URL
+    /// `url` with the full embed UTM composed by the SDK, for example
+    /// `https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology&utm_content=...&utm_medium=LINK&utm_id=...&utm_campaign=...&utm_term=...`.
+    /// nil for links that are not http(s), such as `tel:` or `mailto:`.
+    public let trackingUrl: String?
+    /// Widget folder the link was tapped in.
+    public let folderId: String?
+    public let folderName: String?
+    /// Position of the widget (same value as EmbedWidgetClickEvent.position).
+    public let position: String?
+    /// Post the link belongs to, when known.
+    public let mediaId: String?
+    /// The page URL passed to EmbedIOSSDK.initialize(pageUrl:...).
+    public let pageUrl: String?
+
+    public init(url: URL, trackingUrl: String?, folderId: String? = nil, folderName: String? = nil, position: String? = nil, mediaId: String? = nil, pageUrl: String? = nil) {
+        self.url = url
+        self.trackingUrl = trackingUrl
+        self.folderId = folderId
+        self.folderName = folderName
+        self.position = position
+        self.mediaId = mediaId
+        self.pageUrl = pageUrl
+    }
+}
+
+/// What the SDK knows about the widget a link was tapped in.
+struct EmbedLinkContext: Equatable {
+    var pageUrl: String?
+    var folderId: String?
+    var folderName: String?
+    var position: String?
+    var mediaId: String?
+
+    func makeEvent(for url: URL) -> EmbedLinkClickEvent {
+        // The web page's UTM on the link is the most precise source for the post shown.
+        let linkParams = EmbedTrackingURL.split(url.absoluteString)?.params
+        let linkMediaId = linkParams?.value(for: "utm_source") == EmbedTrackingURL.utmSource
+            ? linkParams?.value(for: "utm_content")
+            : nil
+        let resolvedMediaId = (linkMediaId?.isEmpty == false) ? linkMediaId : mediaId
+        return EmbedLinkClickEvent(
+            url: url,
+            trackingUrl: EmbedTrackingURL.makeForLink(
+                linkUrl: url,
+                pageUrl: pageUrl,
+                folderId: folderId,
+                folderName: folderName,
+                mediaId: mediaId
+            ),
+            folderId: folderId,
+            folderName: folderName,
+            position: position,
+            mediaId: resolvedMediaId,
+            pageUrl: pageUrl
+        )
+    }
+}
+
+/**
+ * @enum EmbedClickPayload
+ * @description Reads values from the widget page's click payload.
+ */
+enum EmbedClickPayload {
+    /// The tapped post's mediaId. Highlight clicks have none (they open a story group); the
+    /// Lightbox starts at the first story, so the first media of the prefetched `mediaList`
+    /// is used when the page sent it. nil when neither is present.
+    static func mediaId(from item: [String: Any]) -> String? {
+        if let mediaId = string(item["mediaId"]) ?? string(item["mediaID"]) ?? string(item["media_id"]) {
+            return mediaId
+        }
+        if let mediaList = item["mediaList"] as? [[String: Any]], let first = mediaList.first {
+            return string(first["mediaId"])
+        }
+        return nil
+    }
+
+    static func string(_ value: Any?) -> String? {
+        if let string = value as? String, !string.isEmpty {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+}
+
+// MARK: - EmbedTrackingURL
+/**
+ * @enum EmbedTrackingURL
+ * @description Builds the click tracking URL the same way the web 91app script does: on a widget
+ *              click it adds UTM parameters to the current page URL (web/public/js/91app.js).
+ *              - Page URL has no utm_source, or utm_source is embed_tagnology: sets
+ *                utm_source=embed_tagnology, utm_id=folderId, utm_content=mediaId,
+ *                utm_medium=embedLocation (CUSTOMIZED if none), utm_campaign=folderName
+ *                (folderId if none), utm_term=page URL without query and fragment.
+ *              - Page URL already has another utm_source: keeps that UTM and only changes
+ *                utm_content to "<utm_content>+embed_tagnology" (or "embed_tagnology").
+ *              Other query parameters and the fragment are kept. The query is encoded like
+ *              the browser's URLSearchParams (space as "+", "+" as "%2B").
+ */
+enum EmbedTrackingURL {
+    static let utmSource = "embed_tagnology"
+    static let defaultMedium = "CUSTOMIZED"
+
+    static func make(
+        pageUrl: String,
+        folderId: String,
+        folderName: String?,
+        embedLocation: String?,
+        mediaId: String?
+    ) -> String? {
+        guard var parts = split(pageUrl) else { return nil }
+        let pageWithoutQuery = parts.base
+        var params = parts.params
+        let currentSource = params.value(for: "utm_source")
+
+        if let currentSource, !currentSource.isEmpty, currentSource != utmSource {
+            let currentContent = params.value(for: "utm_content") ?? ""
+            let newContent = (!currentContent.isEmpty && !currentContent.contains(utmSource))
+                ? "\(currentContent)+\(utmSource)"
+                : utmSource
+            params.set("utm_content", newContent)
+        } else {
+            params.set("utm_source", utmSource)
+            params.set("utm_id", folderId)
+            params.set("utm_content", mediaId ?? "")
+            params.set("utm_medium", nonEmpty(embedLocation) ?? defaultMedium)
+            params.set("utm_campaign", nonEmpty(folderName) ?? folderId)
+            params.set("utm_term", pageWithoutQuery)
+        }
+
+        parts.params = params
+        return join(parts)
+    }
+
+    static let linkMedium = "LINK"
+
+    /**
+     * Builds the tracking URL for a link tapped in a widget or the Lightbox (for example a
+     * product card), like the web page's Helper.AddUTMParams: utm_source=embed_tagnology,
+     * utm_medium=LINK, utm_id=folderId, utm_content=mediaId, utm_campaign=folderName,
+     * utm_term=page URL; a value the SDK does not have is left empty (`utm_content=`).
+     * When the web page already added embed UTM to the
+     * link, its values win (the Lightbox can show another post than the one first tapped);
+     * the SDK only fills what is missing. Other UTM on the link is replaced, as on the web.
+     * nil for links that are not http(s) (tel:, mailto:, line:).
+     */
+    static func makeForLink(
+        linkUrl: URL,
+        pageUrl: String?,
+        folderId: String?,
+        folderName: String?,
+        mediaId: String?
+    ) -> String? {
+        guard var parts = split(linkUrl.absoluteString) else { return nil }
+        var params = parts.params
+        let linkHasEmbedUtm = params.value(for: "utm_source") == utmSource
+
+        func setKeepingEmbedValue(_ name: String, _ value: String?) {
+            if linkHasEmbedUtm, let existing = params.value(for: name), !existing.isEmpty {
+                return
+            }
+            params.set(name, value ?? "")
+        }
+
+        params.set("utm_source", utmSource)
+        setKeepingEmbedValue("utm_content", mediaId)
+        setKeepingEmbedValue("utm_medium", linkMedium)
+        setKeepingEmbedValue("utm_id", folderId)
+        setKeepingEmbedValue("utm_campaign", folderName)
+        setKeepingEmbedValue("utm_term", pageUrl)
+
+        parts.params = params
+        return join(parts)
+    }
+
+    struct URLParts {
+        var base: String
+        var params: QueryParams
+        var fragment: String?
+    }
+
+    /// Splits an http(s) URL into the part before "?", its query and its fragment.
+    static func split(_ urlString: String) -> URLParts? {
+        guard let parsed = URL(string: urlString),
+              let scheme = parsed.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              parsed.host?.isEmpty == false else {
+            return nil
+        }
+        var rest = urlString
+        var fragment: String?
+        if let hashIndex = rest.firstIndex(of: "#") {
+            fragment = String(rest[rest.index(after: hashIndex)...])
+            rest = String(rest[..<hashIndex])
+        }
+        var query = ""
+        if let questionIndex = rest.firstIndex(of: "?") {
+            query = String(rest[rest.index(after: questionIndex)...])
+            rest = String(rest[..<questionIndex])
+        }
+        return URLParts(base: rest, params: parseQuery(query), fragment: fragment)
+    }
+
+    static func join(_ parts: URLParts) -> String {
+        var result = parts.base
+        let encodedQuery = parts.params.items
+            .map { "\(formEncode($0.name))=\(formEncode($0.value))" }
+            .joined(separator: "&")
+        if !encodedQuery.isEmpty {
+            result += "?\(encodedQuery)"
+        }
+        if let fragment = parts.fragment {
+            result += "#\(fragment)"
+        }
+        return result
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    struct QueryParams {
+        var items: [(name: String, value: String)] = []
+
+        func value(for name: String) -> String? {
+            items.first { $0.name == name }?.value
+        }
+
+        /// Like URLSearchParams.set: replaces the first match and drops the rest; nil removes the name.
+        mutating func set(_ name: String, _ value: String?) {
+            guard let value else {
+                items.removeAll { $0.name == name }
+                return
+            }
+            if let index = items.firstIndex(where: { $0.name == name }) {
+                items[index].value = value
+                var seen = false
+                items.removeAll { item in
+                    guard item.name == name else { return false }
+                    defer { seen = true }
+                    return seen
+                }
+            } else {
+                items.append((name, value))
+            }
+        }
+    }
+
+    static func parseQuery(_ query: String) -> QueryParams {
+        var params = QueryParams()
+        for segment in query.split(separator: "&", omittingEmptySubsequences: true) {
+            let pair = segment.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = formDecode(String(pair[0]))
+            let value = pair.count > 1 ? formDecode(String(pair[1])) : ""
+            params.items.append((name, value))
+        }
+        return params
+    }
+
+    private static func formDecode(_ value: String) -> String {
+        let spaced = value.replacingOccurrences(of: "+", with: " ")
+        return spaced.removingPercentEncoding ?? spaced
+    }
+
+    private static let formAllowed: CharacterSet = {
+        var set = CharacterSet()
+        set.insert(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789*-._ ")
+        return set
+    }()
+
+    private static func formEncode(_ value: String) -> String {
+        let encoded = value.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? value
+        return encoded.replacingOccurrences(of: " ", with: "+")
     }
 }
 
@@ -1845,6 +2153,12 @@ public struct EmbedView: View {
                     folderId: folderInfo.folderId,
                     pageUrl: pageUrl,
                     layout: folderInfo.layout,
+                    linkContext: EmbedLinkContext(
+                        pageUrl: pageUrl,
+                        folderId: folderInfo.folderId,
+                        folderName: folderInfo.folderName,
+                        position: folderInfo.displayPosition
+                    ),
                     contentHeight: $contentHeight,
                     onEvent: handleEmbedEvent
                 )
@@ -1955,30 +2269,29 @@ public struct EmbedView: View {
                 return
             }
 
-            func extractString(_ value: Any?) -> String? {
-                if let string = value as? String, !string.isEmpty {
-                    return string
-                }
-                if let number = value as? NSNumber {
-                    return number.stringValue
-                }
-                return nil
-            }
+            let resolvedMediaId = EmbedClickPayload.mediaId(from: item)
 
-            let resolvedMediaId =
-                extractString(item["mediaId"]) ??
-                extractString(item["mediaID"]) ??
-                extractString(item["media_id"])
-
+            let clickFolderId = (item["folderId"] as? String) ?? folderInfo.folderId
+            let clickFolderName = (item["folderName"] as? String) ?? folderInfo.folderName
+            // Same UTM as the web 91app script: utm_medium is the folder's embedLocation and
+            // utm_campaign prefers the folder's own name.
+            let trackingUrl = EmbedTrackingURL.make(
+                pageUrl: pageUrl,
+                folderId: clickFolderId,
+                folderName: folderInfo.folderName?.isEmpty == false ? folderInfo.folderName : clickFolderName,
+                embedLocation: folderInfo.embedLocation,
+                mediaId: resolvedMediaId
+            )
             let clickEvent = EmbedWidgetClickEvent(
-                folderId: (item["folderId"] as? String) ?? folderInfo.folderId,
-                folderName: (item["folderName"] as? String) ?? folderInfo.folderName,
+                folderId: clickFolderId,
+                folderName: clickFolderName,
                 position: folderInfo.displayPosition,
                 mediaId: resolvedMediaId,
-                url: pageUrl
+                url: pageUrl,
+                trackingUrl: trackingUrl
             )
             print(
-                "[EmbedWidgetClick] {folderId: \(clickEvent.folderId), folderName: \(clickEvent.folderName ?? "nil"), position: \(clickEvent.position ?? "nil"), mediaId: \(clickEvent.mediaId ?? "nil"), url: \(clickEvent.url ?? "nil")}"
+                "[EmbedWidgetClick] {folderId: \(clickEvent.folderId), folderName: \(clickEvent.folderName ?? "nil"), position: \(clickEvent.position ?? "nil"), mediaId: \(clickEvent.mediaId ?? "nil"), url: \(clickEvent.url ?? "nil"), trackingUrl: \(clickEvent.trackingUrl ?? "nil")}"
             )
             onClick?(clickEvent)
 
@@ -1995,7 +2308,16 @@ public struct EmbedView: View {
                   let jsonString = String(data: jsonData, encoding: .utf8) else {
                 return
             }
-            openLightbox(with: jsonString)
+            openLightbox(
+                with: jsonString,
+                linkContext: EmbedLinkContext(
+                    pageUrl: pageUrl,
+                    folderId: clickFolderId,
+                    folderName: clickFolderName,
+                    position: folderInfo.displayPosition,
+                    mediaId: resolvedMediaId
+                )
+            )
         case "toggleLB":
             let openValue = event.payload["open"]
             let shouldOpen: Bool? = {
@@ -2029,7 +2351,7 @@ public struct EmbedView: View {
     }
 
     // MARK: - lightbox
-    private func openLightbox(with messageJSON: String) {
+    private func openLightbox(with messageJSON: String, linkContext: EmbedLinkContext) {
         let session: EmbedLightboxSession
         if let current = lightboxSession, current.pageUrl == pageUrl {
             session = current
@@ -2038,6 +2360,7 @@ public struct EmbedView: View {
             lightboxSession = session
         }
         session.onEvent = handleEmbedEvent
+        session.linkContext = linkContext
         session.onLoadFailed = { lightboxLoadFailed = true }
         // App 已用原生頁開啟商品連結：關閉 Lightbox，否則原生頁會被 fullScreenCover 蓋住。
         // 非頁面自行關閉，handleLightboxDismiss 會重載 Lightbox 讓影片停止播放。
@@ -2243,9 +2566,10 @@ enum EmbedLinkOpener {
         return !embedHosts.contains(host)
     }
 
-    /// Set by EmbedIOSSDK.setLinkHandler(_:). Returns true when the Host App opened the link itself.
+    /// Set by EmbedIOSSDK.setLinkHandler(_:) or setLinkClickHandler(_:). Returns true when the
+    /// Host App opened the link itself.
     @MainActor
-    static var appHandler: ((URL) -> Bool)?
+    static var appHandler: ((EmbedLinkClickEvent) -> Bool)?
 
     /// Where an external link went.
     enum Outcome: Equatable {
@@ -2259,11 +2583,15 @@ enum EmbedLinkOpener {
 
     /// Asks the Host App's link handler first, then falls back to the system.
     @MainActor
-    static func open(_ url: URL?, systemOpen: ((URL) -> Void)? = nil) -> Outcome {
+    static func open(_ url: URL?, context: EmbedLinkContext = EmbedLinkContext(), systemOpen: ((URL) -> Void)? = nil) -> Outcome {
         guard let url, shouldOpenExternally(url) else { return .notExternal }
-        if let appHandler, appHandler(url) {
-            EmbedLogger.log("[EmbedLinkOpener] handled by app url=\(url.absoluteString)")
-            return .handledByApp
+        if let appHandler {
+            let event = context.makeEvent(for: url)
+            print("[EmbedLinkClick] {url: \(url.absoluteString), trackingUrl: \(event.trackingUrl ?? "nil"), folderId: \(event.folderId ?? "nil"), mediaId: \(event.mediaId ?? "nil")}")
+            if appHandler(event) {
+                EmbedLogger.log("[EmbedLinkOpener] handled by app url=\(url.absoluteString)")
+                return .handledByApp
+            }
         }
         EmbedLogger.log("[EmbedLinkOpener] open url=\(url.absoluteString)")
         if let systemOpen {
@@ -2277,8 +2605,8 @@ enum EmbedLinkOpener {
     /// Opens the navigation's URL if it is external. The caller must not load it in the web view
     /// unless the outcome is `.notExternal`.
     @MainActor
-    static func openIfExternal(_ navigationAction: WKNavigationAction) -> Outcome {
-        open(navigationAction.request.url)
+    static func openIfExternal(_ navigationAction: WKNavigationAction, context: EmbedLinkContext = EmbedLinkContext()) -> Outcome {
+        open(navigationAction.request.url, context: context)
     }
 }
 
@@ -2345,6 +2673,8 @@ struct EmbedWebView: UIViewRepresentable {
     let folderId: String
     let pageUrl: String
     let layout: String?
+    /// Passed with links tapped in this widget.
+    var linkContext = EmbedLinkContext()
     @Binding var contentHeight: CGFloat
     let onEvent: (EmbedEvent) -> Void
 
@@ -2450,13 +2780,13 @@ struct EmbedWebView: UIViewRepresentable {
 
         // window.open（商品連結）先交給 Host App 的 link handler，未處理再交給系統開啟
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            _ = EmbedLinkOpener.openIfExternal(navigationAction)
+            _ = EmbedLinkOpener.openIfExternal(navigationAction, context: parent.linkContext)
             return nil
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated,
-               EmbedLinkOpener.openIfExternal(navigationAction) != .notExternal {
+               EmbedLinkOpener.openIfExternal(navigationAction, context: parent.linkContext) != .notExternal {
                 decisionHandler(.cancel)
                 return
             }
@@ -2536,6 +2866,8 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// Called when the Host App's link handler opened a link tapped in the Lightbox, so the
     /// presenting EmbedView closes the Lightbox and the App's native page is visible.
     var onLinkHandledByApp: (() -> Void)?
+    /// The widget click that opened the Lightbox; passed with links tapped in it.
+    var linkContext = EmbedLinkContext()
     private(set) var loadFailed = false
 
     private let url: URL
@@ -2708,14 +3040,14 @@ final class EmbedLightboxSession: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     // Product links use window.open; hand them to the Host App or the system instead of dropping them.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        handleLinkOutcome(EmbedLinkOpener.openIfExternal(navigationAction))
+        handleLinkOutcome(EmbedLinkOpener.openIfExternal(navigationAction, context: linkContext))
         return nil
     }
 
     // A tapped link must not replace the reused Lightbox page.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if navigationAction.navigationType == .linkActivated {
-            let outcome = EmbedLinkOpener.openIfExternal(navigationAction)
+            let outcome = EmbedLinkOpener.openIfExternal(navigationAction, context: linkContext)
             if outcome != .notExternal {
                 handleLinkOutcome(outcome)
                 decisionHandler(.cancel)
