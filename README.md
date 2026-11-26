@@ -11,6 +11,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - ✅ Support for fixed position widgets
 - ✅ Fullscreen mode support
 - ✅ Automatic resize handling
+- ⭐ **`trackingUrl`（1.0.19 新增）**：點擊版位、點擊商品連結時回傳 SDK 組好完整 UTM 的網址，見 [點擊追蹤網址 trackingUrl](#-點擊追蹤網址-trackingurl1019-新增)
 
 ## Requirements
 
@@ -18,10 +19,43 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 - Swift 5.0+
 - Xcode 14.0+
 
+## ⭐ 點擊追蹤網址 trackingUrl（1.0.19 新增）
+
+> App 可直接用 `trackingUrl` 裡的 UTM 做成效追蹤，與網頁版網址帶 UTM 的做法相同，不需要自己組網址。
+
+| 事件 | 從哪裡拿 | `trackingUrl` 的網址本體 | `utm_medium` |
+|---|---|---|---|
+| 點擊版位（貼文） | `EmbedWidgetView` 的 `onClick` → `EmbedWidgetClickEvent.trackingUrl` | 目前頁面（`initialize(pageUrl:)` 的網址） | 版位的 embedLocation |
+| 點擊商品連結（版位或 Lightbox 內） | `EmbedIOSSDK.setLinkClickHandler` → `EmbedLinkClickEvent.trackingUrl` | 被點擊的商品連結 | `LINK` |
+
+```swift
+// 1. 點擊版位
+EmbedWidgetView(position: EmbedIOSSDK.BELOW_BUY_BUTTON, pageUrl: pageUrl, onClick: { click in
+    // click.trackingUrl 例：https://{shop}/SalePage/Index/{目前頁 id}?utm_source=embed_tagnology&utm_id=...&utm_content=...&utm_medium=BELOW_BUY_BUTTON&utm_campaign=...&utm_term=...
+    Analytics.track(click.trackingUrl)
+})
+
+// 2. 點擊商品連結（App 啟動時設定一次）
+EmbedIOSSDK.setLinkClickHandler { event in
+    // event.trackingUrl 例：https://{shop}/SalePage/Index/{商品 id}?utm_source=embed_tagnology&utm_content=...&utm_medium=LINK&utm_id=...&utm_campaign=...&utm_term=...
+    Analytics.track(event.trackingUrl)
+    return AppNavigator.open(event.url)   // 導頁用 event.url（原始連結）或 trackingUrl 皆可
+}
+```
+
+共同規則：
+
+- 參數：`utm_source=embed_tagnology`、`utm_id`（folderId）、`utm_content`（貼文 mediaId）、`utm_medium`、`utm_campaign`（內容牆名稱）、`utm_term`（來源頁網址）。
+- SDK 沒有值的欄位保留參數、值留空（例如 `utm_content=`）。
+- 非 http(s) 的網址（`tel:`、`mailto:`）`trackingUrl` 為 `nil`。
+- `setLinkHandler` 照舊可用（收到原始網址），要拿 `trackingUrl` 請改用 `setLinkClickHandler`；兩者共用同一個 handler，以最後設定的為準。
+- 完整規則：[點擊版位](#widget-click-callback-onclick)、[點擊商品連結](#取得連結的-trackingurlsetlinkclickhandler)。
+
 ## Release Notes
 
 ### 1.0.19
 
+- ⭐ **新增 `trackingUrl`**（說明見 [點擊追蹤網址 trackingUrl](#-點擊追蹤網址-trackingurl1019-新增)）
 - `EmbedWidgetClickEvent` 新增 `trackingUrl: String?`：版位被點擊時，以與網頁版 91app script 相同的規則，在目前頁面網址（`initialize(pageUrl:)` 傳入的網址）加上 UTM 參數，例如 `https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology&utm_id=<folderId>&utm_content=<mediaId>&utm_medium=<嵌入位置>&utm_campaign=<內容牆名稱>&utm_term=<來源頁網址>`。App 可直接用它做成效追蹤，比照網頁版網址帶 UTM 的情境。
   - init 參數 `trackingUrl` 預設 nil，既有呼叫端不需改程式。
 - 新增 `EmbedIOSSDK.setLinkClickHandler(_:)`：與 `setLinkHandler` 相同，但 handler 收到 `EmbedLinkClickEvent`，含被點擊的連結 `url`、SDK 組好完整 UTM 的 `trackingUrl`（以被點擊的商品連結為主，`utm_medium=LINK`），以及 `folderId`、`folderName`、`position`、`mediaId`、`pageUrl`。
