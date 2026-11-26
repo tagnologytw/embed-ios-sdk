@@ -20,7 +20,7 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
-### 1.0.19（未發版）
+### 1.0.19
 
 - `EmbedWidgetClickEvent` 新增 `trackingUrl: String?`：版位被點擊時，以與網頁版 91app script 相同的規則，在目前頁面網址（`initialize(pageUrl:)` 傳入的網址）加上 UTM 參數，例如 `https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology&utm_id=<folderId>&utm_content=<mediaId>&utm_medium=<嵌入位置>&utm_campaign=<內容牆名稱>&utm_term=<來源頁網址>`。App 可直接用它做成效追蹤，比照網頁版網址帶 UTM 的情境。
   - init 參數 `trackingUrl` 預設 nil，既有呼叫端不需改程式。
@@ -125,7 +125,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.18")
+    .package(url: "https://github.com/tagnologytw/embed-ios-sdk.git", from: "1.0.19")
 ]
 ```
 
