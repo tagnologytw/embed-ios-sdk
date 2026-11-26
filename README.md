@@ -20,6 +20,16 @@ Developed by Tagnology, an SDK that can be embedded into iOS apps.
 
 ## Release Notes
 
+### 1.0.19（未發版）
+
+- `EmbedWidgetClickEvent` 新增 `trackingUrl: String?`：版位被點擊時，以與網頁版 91app script 相同的規則，在目前頁面網址（`initialize(pageUrl:)` 傳入的網址）加上 UTM 參數，例如 `https://{shop}/SalePage/Index/{id}?utm_source=embed_tagnology&utm_id=<folderId>&utm_content=<mediaId>&utm_medium=<嵌入位置>&utm_campaign=<內容牆名稱>&utm_term=<來源頁網址>`。App 可直接用它做成效追蹤，比照網頁版網址帶 UTM 的情境。
+  - init 參數 `trackingUrl` 預設 nil，既有呼叫端不需改程式。
+- 新增 `EmbedIOSSDK.setLinkClickHandler(_:)`：與 `setLinkHandler` 相同，但 handler 收到 `EmbedLinkClickEvent`，含被點擊的連結 `url`、SDK 組好完整 UTM 的 `trackingUrl`（以被點擊的商品連結為主，`utm_medium=LINK`），以及 `folderId`、`folderName`、`position`、`mediaId`、`pageUrl`。
+  - `setLinkHandler` 照舊可用、收到的網址不變；兩者共用同一個 handler，以最後設定的為準。
+- SDK 沒有值的 UTM 欄位保留參數、值留空（例如 `utm_content=`）。
+- 精選動態（Highlight）的點擊資料沒有 `mediaId`：`EmbedWidgetClickEvent.mediaId`／`utm_content` 改用網頁預抓清單（`mediaList`）的第一則，也就是 Lightbox 開啟時顯示的那則；網頁沒有預抓到（排在第 7 個以後的精選動態，或預抓還沒完成）時仍為空。
+- 測試：`EmbedTrackingURLTests`。
+
 ### 1.0.18
 
 - 新增錯誤碼 `APP_SDK_DISABLED`：商家在 Tagnology 後台尚未開通「App SDK」權限（預設關閉）時，`/widget/pageBundle` 與 `/widget/floatingPositions` 回 HTTP 403 + `errorCode: "APP_SDK_DISABLED"`。`initialize` 會回傳 `statusCode = 403`（`EmbedWidgetLoadError.StatusCode.appSdkDisabled`）、`errorCode = EmbedAPI.appSdkDisabledErrorCode` 的錯誤；`EmbedWidgetView` 的 `onError` 與 `getFloatingPositions` 的 `onError` 也會收到同樣的錯誤。App 收到時**不要顯示任何版位、不要重試**。
@@ -186,6 +196,7 @@ struct ContentView: View {
                             // click.position
                             // click.mediaId (optional)
                             // click.url (equals initialize(pageUrl: ...) value)
+                            // click.trackingUrl (page URL + UTM, same as the web script)
                         }
                     )
                 }
@@ -240,6 +251,34 @@ EmbedIOSSDK.setLinkHandler { url in
 - 只有離開 `embed.tagnology.co` 的連結會交給 handler（商品頁、Instagram、`tel:`、`mailto:`、`line:` 等），版位與 Lightbox 自身的頁面不會。
 - Lightbox 是以 `fullScreenCover` 顯示，回傳 `true` 後 SDK 才開始關閉它。App 以 push 方式導頁沒有問題；若 App 是以 modal（`present`）開原生頁，請等 Lightbox 關閉後再 present（例如延遲約 0.5 秒），否則 UIKit 會因為已有 modal 而不顯示。
 - 點擊成效追蹤由版位網頁在開啟連結前送出，不受 handler 影響。
+
+#### 取得連結的 trackingUrl（`setLinkClickHandler`）
+
+App 若要用 UTM 追蹤商品連結點擊，改用 `setLinkClickHandler`。回傳值的意義與 `setLinkHandler` 相同；兩者共用同一個 handler，以最後設定的為準。
+
+```swift
+EmbedIOSSDK.setLinkClickHandler { event in
+    // event.url          被點擊的連結（原封不動，與 setLinkHandler 收到的相同）
+    // event.trackingUrl  被點擊的連結 + SDK 組好的完整 UTM；非 http(s) 連結（tel:、mailto:）為 nil
+    // event.folderId / event.folderName / event.position / event.mediaId / event.pageUrl
+    return AppNavigator.open(event.url)
+}
+```
+
+`trackingUrl` 規則（與網頁版 `Helper.AddUTMParams` 相同）：
+
+| 參數 | 值 |
+|---|---|
+| `utm_source` | `embed_tagnology` |
+| `utm_content` | `mediaId` |
+| `utm_medium` | `LINK` |
+| `utm_id` | `folderId` |
+| `utm_campaign` | 內容牆名稱 |
+| `utm_term` | 來源頁網址（`initialize(pageUrl:)` 的完整網址） |
+
+- SDK 沒有值的欄位保留參數、值留空（例如 `utm_campaign=`）。
+- 連結若已由網頁帶上 `utm_source=embed_tagnology`，沿用網頁的值（Lightbox 內可能已切換到別則貼文，網頁才知道目前是哪一則），SDK 只補上缺的欄位。
+- 連結原有的其他來源 UTM 會被取代，與網頁版相同；其他 query 與 `#` 保留。
 
 ### Debug Logging
 
@@ -548,7 +587,7 @@ EmbedWidgetView(
     pageUrl: pageUrl,
     onError: { _ in },
     onClick: { click in
-        // click.folderId, click.folderName, click.position, click.mediaId, click.url
+        // click.folderId, click.folderName, click.position, click.mediaId, click.url, click.trackingUrl
     }
 )
 ```
@@ -560,6 +599,23 @@ Callback payload fields:
 - `position` (`String?`): widget position (embed location/floating position).
 - `mediaId` (`String?`): media id from widget click payload. This field may be `nil` if widget does not provide it.
 - `url` (`String?`): always equals the page URL passed to `EmbedIOSSDK.initialize(pageUrl:...)`.
+- `trackingUrl` (`String?`): `url` with the UTM parameters the web 91app script adds to the page URL when a widget is clicked. `nil` if `url` is not an http(s) URL.
+
+`trackingUrl` 規則（與網頁版 `91app.js` 點擊版位時相同）：
+
+| 參數 | 值 |
+|---|---|
+| `utm_source` | `embed_tagnology` |
+| `utm_id` | `folderId` |
+| `utm_content` | `mediaId`（精選動態用預抓清單的第一則；都沒有時留空） |
+| `utm_medium` | 版位的 `embedLocation`（沒有時為 `CUSTOMIZED`） |
+| `utm_campaign` | 內容牆名稱（沒有時為 `folderId`） |
+| `utm_term` | 來源頁網址（`pageUrl` 去掉 query 與 `#`） |
+
+- `pageUrl` 原有的其他 query 與 `#` 會保留；先前的 `embed_tagnology` UTM 會被這次點擊覆蓋。
+- 若 `pageUrl` 已帶其他來源的 `utm_source`（例如 `facebook`），不覆蓋對方的 UTM，只把 `utm_content` 改成 `<原 utm_content>+embed_tagnology`（原本沒有則為 `embed_tagnology`）。
+- 網址編碼與瀏覽器 `URLSearchParams` 相同（空白為 `+`，`+` 為 `%2B`）。
+- 網頁版還會把這組 UTM 存在 localStorage，使用者在同一個網站換頁時繼續帶上；SDK 只回傳網址，換頁後要不要沿用由 App 決定。
 
 Debug output:
 
