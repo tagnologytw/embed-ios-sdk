@@ -13,7 +13,8 @@ GitHub Actions CI 已移除，這份程序就是合併前的唯一把關。每�
 2. **不可出現全黑畫面**（91APP 回報的問題）：點擊版位後 Lightbox 必須立刻有內容或載入指示。`scripts/sim-record.sh stop` 回報 `FAIL black screen` 即不通過；`WARN near-black` 需看 contact sheet 確認畫面上有 UI（標題、關閉鈕、進度條或轉圈）。
 3. 點商品連結要有反應（開啟外部瀏覽器或對應 App），回到 App 後 Lightbox 狀態正常。
 4. `onClick` 回報的 `position` 等於實際顯示的版位（浮窗回報 `FIXED_*`）。
-5. 單元測試、實機建置全部通過。
+5. `trackingUrl`（1.0.19 起，91APP 用來做 UTM 追蹤）正確：點版位與點商品連結都要有，6 個 utm 參數齊全（`utm_source=embed_tagnology`、`utm_id`、`utm_content`、`utm_medium`、`utm_campaign`、`utm_term`），`utm_content` 是**目前顯示那則**的 mediaId。
+6. 單元測試、實機建置全部通過。
 
 ## 環境
 
@@ -44,6 +45,7 @@ xcrun simctl launch --console-pty --terminate-running-process $UDID tagnology.co
 ```
 
 - `-embedLogging` 會開 SDK log（`[EmbedWebView]`、`[LightboxSession]`、`[EmbedWidgetClick]`、`[EmbedAnalytics]`）。用 `run_in_background` 或 `&` 啟動，log 從檔案讀。
+- 再加上 `-nativeProductLinks` 會以 `EmbedIOSSDK.setLinkClickHandler` 模擬 91APP 的原生商品頁，商品連結點擊會印出 `[EmbedLinkClick] {url, trackingUrl, ...}` 與 `[ectest] link trackingUrl=`（**沒設 handler 時 SDK 不印 `[EmbedLinkClick]`**）。驗證 trackingUrl 時用這個參數啟動，商品連結會開 App 內原生頁而不是 Safari。
 - **模擬器特性**：`simctl launch` 剛安裝的 App 時，App 可能還沒成為前景，WebView 會停著不畫。啟動後先在空白處 tap 一下，再判斷版位是否空白。
 
 ### 3. 版型測試頁：逐一切換所有版位
@@ -78,6 +80,9 @@ scripts/sim-record.sh stop <name>     # exit 1 = 全黑畫面
 - 限動點右半邊切到下一則，確認商品卡片完整露出。
 - 點一張商品卡片：應跳到 Safari 開啟商品頁（log 有 `[EmbedLinkOpener] open url=`）；點左上「◀ ectest」回 App，Lightbox 仍正常，可關閉。
 - 從 log 確認 `[EmbedWidgetClick]` 的 `position`：浮窗為 `FIXED_BOTTOM_RIGHT`，一般版位為其 embedLocation。
+- **trackingUrl**（審核標準 5，以 `-nativeProductLinks` 啟動）：
+  - `[EmbedWidgetClick]` 的 `trackingUrl`：網址本體是目前頁面（`pageUrl`），`utm_medium` 是版位的 embedLocation。精選動態的 `utm_content` 是第一則限動的 mediaId（不可為空）。
+  - 在 Lightbox **切到第二則**再點商品卡：`[EmbedLinkClick]` 的 `trackingUrl` 網址本體是商品連結，`utm_medium=LINK`，`utm_content` 必須是**第二則**的 mediaId，不是最初點開那則。連結本身應已帶網頁加上的 embed UTM（`url` 欄位含 `utm_source=embed_tagnology`）；若沒有，先查商品連結網域與來源頁是否同站（embed-web `WidgetService.HandleLinkClick`）。
 
 ### 5. 商品頁分頁
 
